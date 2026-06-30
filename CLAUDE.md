@@ -1,0 +1,47 @@
+## 프로젝트 성격
+
+크리에이터 정산(Creator Settlement) API — 과제(assignment)용 Spring Boot 프로젝트입니다.
+
+## 명령어
+
+```bash
+./gradlew bootRun        # 앱 실행 (포트 8080)
+./gradlew test           # 전체 테스트
+./gradlew test --tests "com.wonjiyap.creatorsettlementapi.*ClassName*"   # 단일 테스트 클래스
+./gradlew clean build    # 클린 빌드 (테스트 포함)
+./gradlew compileKotlin  # 컴파일만 빠르게 확인
+```
+
+실행 후 접속:
+- Swagger UI: `http://localhost:8080/api-docs` (커스텀 경로 — `application.yml`의 `springdoc.swagger-ui.path`)
+- OpenAPI JSON: `http://localhost:8080/v3/api-docs`
+- H2 Console: `http://localhost:8080/h2-console` — JDBC URL `jdbc:h2:mem:settlement`, User `sa`, Password 비움
+
+## 기술 스택 / 버전 제약 (중요)
+
+- Kotlin 2.3.21 (JVM 17), Gradle 9.5.1 (Kotlin DSL), H2 인메모리.
+- **Spring Boot는 반드시 3.5.x 라인을 유지할 것.**
+- JPA 엔티티를 위해 `kotlin("plugin.jpa")` + `allOpen`이 `@Entity`/`@MappedSuperclass`/`@Embeddable`에 적용되어 있다(엔티티 클래스를 `open`으로 선언할 필요 없음).
+
+## 도메인 / 비즈니스 규칙 (구현 기준)
+
+정산 계산 로직의 정확성이 이 과제의 핵심이다. 아래 규칙을 코드/테스트에서 반드시 지킬 것.
+
+- **수수료율: 고정 20%.** 단, 변경 가능하도록 설계할 것(상수 하드코딩 지양, 추후 수수료율 이력 관리로 확장 여지). 정산 예정 금액 = 순 판매 − 수수료.
+- **순 판매 = 총 판매 − 환불.** 부분 환불(환불액 < 원결제액)을 반드시 지원.
+- **정산 기간 기준**: 판매는 결제 완료 일시(`paidAt`), 취소는 취소 일시 기준. **KST**. 월 경계는 해당 월 1일 `00:00:00` ~ 말일 `23:59:59`. → 1월 말 결제 / 2월 초 취소는 각각 다른 월 정산에 반영된다(월 경계 케이스).
+- 빈 월 조회(판매 없음)는 0원으로 일관되게 응답.
+
+### API 범위
+- 필수: ① 판매/취소 내역 등록 및 크리에이터별·기간 필터 조회, ② 크리에이터별 월별 정산 계산(요청: 크리에이터 ID + 연월 `YYYY-MM`; 응답: 총 판매/환불/순 판매/수수료/정산 예정 금액 + 판매·취소 건수), ③ 운영자용 기간 집계(시작일~종료일 → 크리에이터별 정산 예정 금액 목록 + 전체 합계).
+- 선택(가산점): 정산 상태 관리(PENDING→CONFIRMED→PAID), 동일 기간 중복 정산 방지, CSV/엑셀 다운로드, 수수료율 변경 이력(과거 정산은 당시 수수료율 적용).
+
+실제 결제 시스템 연동은 불필요 — 데이터는 API 또는 직접 삽입으로 등록한다.
+
+## 패키지
+
+루트 패키지는 `com.wonjiyap.creatorsettlementapi`.
+
+## 문서
+
+상세 과제 명세와 API 예시는 `README.md` 참조(섹션 스켈레톤이 잡혀 있으며 구현하며 채워 나간다).
