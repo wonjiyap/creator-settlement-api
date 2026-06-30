@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: creator-settlement-api
+  datasource:
+    url: jdbc:h2:mem:settlement
+    username: sa
+    password:
+  h2:
+    console:
+      enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /api-docs
