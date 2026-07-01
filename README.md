@@ -74,6 +74,37 @@ Content-Type: application/json
 | 유효성 위반(`amount ≤ 0`, `course_id`/`student_id` 공백) | `400` | `{ "code": 400, "message": "amount: ..." }` |
 | 존재하지 않는 강의 | `404` | `{ "code": 404, "message": "존재하지 않는 강의입니다: course-없음" }` |
 
+### 취소(환불) 내역 등록 — `POST /api/cancel-record`
+`sale_record_id`는 존재하는 판매여야 하고, `refund_amount`는 0보다 커야 한다. **누적 환불액(기존 + 이번)이 원결제 금액을 넘을 수 없다**(부분 환불 지원). 서버가 `id`를 생성한다.
+
+요청
+```http
+POST /api/cancel-record
+Content-Type: application/json
+
+{
+  "sale_record_id": "sale-4",
+  "refund_amount": 30000,
+  "canceled_at": "2025-07-01 10:00:00"
+}
+```
+
+응답 `200 OK`
+```json
+{
+  "id": "cancel-9a1b…",
+  "sale_record_id": "sale-4",
+  "refund_amount": 30000,
+  "canceled_at": "2025-07-01 10:00:00"
+}
+```
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 유효성 위반(`refund_amount ≤ 0`, `sale_record_id` 공백) | `400` | `{ "code": 400, "message": "refund_amount: ..." }` |
+| 환불 요청 금액이 환불 가능 잔액(결제액 − 기환불액) 초과 | `400` | `{ "code": 400, "message": "환불 요청 금액이 환불 가능 잔액을 초과합니다: 잔액 50000, 요청 60000" }` |
+| 존재하지 않는 판매 | `404` | `{ "code": 404, "message": "존재하지 않는 판매 내역입니다: sale-없음" }` |
+
 ## 데이터 모델 설명
 연관관계 매핑 없이 각 엔티티는 참조 대상을 **ID 값**으로만 보유한다. (스키마는 Flyway `V1__init.sql`이 소유)
 
