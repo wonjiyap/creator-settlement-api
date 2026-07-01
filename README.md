@@ -16,6 +16,7 @@
 |------|----|
 | Language | Kotlin 2.3.21 (JVM 17) |
 | Framework | Spring Boot 3.5.3 (Spring Web MVC, Spring Data JPA, Validation) |
+| Query | QueryDSL |
 | Database | H2 |
 | DB Migration | Flyway |
 | API Docs | Swagger UI |
