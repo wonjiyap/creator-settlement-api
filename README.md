@@ -27,9 +27,6 @@
 ```bash
 # 애플리케이션 실행
 ./gradlew bootRun
-
-# 테스트 실행
-./gradlew test
 ```
 
 실행 후 접속 정보:
@@ -41,6 +38,42 @@
 | H2 Console | http://localhost:8080/h2-console |
 
 ## API 목록 및 예시
+
+### 판매 내역 등록 — `POST /api/sale-record`
+요청 본문의 `course_id`는 존재하는 강의여야 하며, `amount`는 0보다 커야 한다. 서버가 `id`를 생성한다.
+요청·응답 본문 모두 **snake_case**다(Jackson 전역 설정).
+
+요청
+```http
+POST /api/sale-record
+Content-Type: application/json
+
+{
+  "course_id": "course-1",
+  "student_id": "student-100",
+  "amount": 50000,
+  "paid_at": "2025-07-01 10:00:00"
+}
+```
+
+응답 `200 OK`
+```json
+{
+  "id": "sale-3f2c…",
+  "course_id": "course-1",
+  "student_id": "student-100",
+  "amount": 50000,
+  "paid_at": "2025-07-01 10:00:00"
+}
+```
+
+**에러 응답** — 전역 예외 처리(`@RestControllerAdvice`)가 `{ code, message }` 포맷으로 통일:
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 유효성 위반(`amount ≤ 0`, `course_id`/`student_id` 공백) | `400` | `{ "code": 400, "message": "amount: ..." }` |
+| 존재하지 않는 강의 | `404` | `{ "code": 404, "message": "존재하지 않는 강의입니다: course-없음" }` |
+
 ## 데이터 모델 설명
 연관관계 매핑 없이 각 엔티티는 참조 대상을 **ID 값**으로만 보유한다. (스키마는 Flyway `V1__init.sql`이 소유)
 
@@ -55,7 +88,8 @@
 - 금액(`amount`, `refundAmount`)은 원 단위 정수(`Long`/`BIGINT`), 시각(`paidAt`, `canceledAt`)은 `LocalDateTime`(KST).
 
 ### 샘플 데이터 & 검증 시나리오
-애플리케이션 시작 시 Flyway 시드 마이그레이션(`V2__seed_sample_data.sql`)으로 자동 적재된다. **크리에이터 5 · 강의 10 · 판매 32 · 취소 14건.** 인메모리라 재시작 시 항상 동일하게 재적재된다. 명세 제공 시나리오(`명세`)는 그대로 보존하고, 직접 검증용 케이스(`추가`)는 명세 시나리오와 겹치지 않는 크리에이터/월만 사용한다.
+- 애플리케이션 시작 시 Flyway 시드 마이그레이션(`V2__seed_sample_data.sql`)으로 자동 적재된다.
+- 명세 제공 시나리오(`명세`)는 그대로 보존하고, 직접 검증용 케이스(`추가`)는 명세 시나리오와 겹치지 않는 크리에이터/월만 사용한다.
 
 | 구분 | 케이스 | 데이터 | 기대 결과 / 검증 포인트 |
 |------|--------|--------|------------------------|
@@ -82,6 +116,16 @@
 - N+1 문제, 묵시적 JOIN, Lazy/Eager 로딩 이슈 등을 구조적으로 차단하고 실행 쿼리를 예측 가능하게 유지하기 위함입니다.
 - 연관 데이터가 필요한 경우 **Repository를 통해 명시적으로 조회**합니다.
 
+### 예외 처리 일원화 (ErrorCode + 전역 핸들러)
+- 도메인 예외는 단일 `CreatorException(errorCode, message = errorCode.message)`로 던지고, `ErrorCode` enum이 `(HTTP 상태 코드, 기본 메시지)`를 보유합니다. 기본 메시지를 쓰거나 던질 때 상황별 메시지를 주입할 수 있습니다.
+- `@RestControllerAdvice`(전역 핸들러)가 `CreatorException` → `errorCode.code` 상태 + `{ code, message }` 본문으로, 검증 실패 → `400` 동일 포맷으로 변환합니다. → 응답 포맷이 한 곳에서 통일됩니다.
+
 ## 테스트 실행 방법
+```bash
+./gradlew test                                        # 전체 테스트
+./gradlew test --tests "*SaleServiceTest"             # 특정 테스트 클래스
+```
+- 테스트는 `@SpringBootTest` + 인메모리 H2로 실제 스택(Flyway 시드 포함)에서 동작하며, `@Transactional`로 각 테스트 후 롤백되어 데이터가 오염되지 않는다.
+
 ## 미구현 / 제약사항
 ## AI 활용 범위
