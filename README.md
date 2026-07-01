@@ -15,8 +15,9 @@
 | 구분 | 사용 기술 |
 |------|----|
 | Language | Kotlin 2.3.21 (JVM 17) |
-| Framework | Spring Boot 4.1.0 (Spring Web MVC, Spring Data JPA, Validation) |
+| Framework | Spring Boot 3.5.3 (Spring Web MVC, Spring Data JPA, Validation) |
 | Database | H2 |
+| DB Migration | Flyway |
 | API Docs | Swagger UI |
 
 ## 실행 방법
@@ -41,7 +42,15 @@
 ## API 목록 및 예시
 ## 데이터 모델 설명
 ## 요구사항 해석 및 가정
+- 모든 시각은 **KST 기준**으로 저장·해석한다. DB 컬럼은 타임존 없는 `TIMESTAMP`(엔티티 `LocalDateTime`)를 사용하고, 입력에 포함된 `+09:00` 오프셋은 KST 벽시계 값으로 취급한다.
+
 ## 설계 결정과 이유
+
+### JPA 연관관계 매핑 미사용 (FK ID만 보유)
+- `@OneToMany`, `@ManyToOne` 등 JPA 연관관계 매핑을 사용하지 않고, 엔티티 간 관계는 **FK ID 값만 보유**합니다.
+- N+1 문제, 묵시적 JOIN, Lazy/Eager 로딩 이슈 등을 구조적으로 차단하고 실행 쿼리를 예측 가능하게 유지하기 위함입니다.
+- 연관 데이터가 필요한 경우 **Repository를 통해 명시적으로 조회**합니다.
+
 ## 테스트 실행 방법
 ## 미구현 / 제약사항
 ## AI 활용 범위

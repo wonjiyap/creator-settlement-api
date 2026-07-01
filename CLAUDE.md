@@ -2,6 +2,11 @@
 
 크리에이터 정산(Creator Settlement) API — 과제(assignment)용 Spring Boot 프로젝트입니다.
 
+## 작업 규칙 (중요)
+
+- **커밋은 절대 하지 말 것.** `git commit`(및 `git add`/`push` 등 커밋으로 이어지는 작업)은 사용자가 직접 수행한다. Claude는 코드 수정/파일 생성까지만 하고 커밋은 하지 않는다.
+- 각 이슈 작업을 끝낸 뒤에는 `README.md`와 이 `CLAUDE.md`에서 갱신이 필요한 부분(기술 스택, 실행 방법, 도메인 규칙 등)을 한 번씩 점검·수정한다.
+
 ## 명령어
 
 ```bash
@@ -22,6 +27,14 @@
 - Kotlin 2.3.21 (JVM 17), Gradle 9.5.1 (Kotlin DSL), H2 인메모리.
 - **Spring Boot는 반드시 3.5.x 라인을 유지할 것.**
 - JPA 엔티티를 위해 `kotlin("plugin.jpa")` + `allOpen`이 `@Entity`/`@MappedSuperclass`/`@Embeddable`에 적용되어 있다(엔티티 클래스를 `open`으로 선언할 필요 없음).
+
+### 스키마 / DB
+- **스키마는 Flyway가 소유한다.** 마이그레이션 위치: `src/main/resources/db/migration/`(현재 `V1__init.sql`). 테이블 변경은 새 `V{n}__*.sql`을 추가하는 방식으로 한다(기존 파일 수정은 지양 — 단, 인메모리라 매 부팅 이력이 초기화되어 개발 중엔 수정해도 무방).
+- Hibernate 자동 DDL은 끈다: `spring.jpa.hibernate.ddl-auto: validate` → 엔티티 매핑이 Flyway 스키마와 어긋나면 부팅 시 검출된다.
+- ID는 샘플 데이터의 비즈니스 키(`creator-1`, `sale-1` 등)를 그대로 쓰는 **VARCHAR 자연키**. 금액은 원 단위 `BIGINT`.
+- **모든 시각은 KST 기준**: 컬럼은 `TIMESTAMP`(WITHOUT TIME ZONE, MySQL `DATETIME` 급), 엔티티는 `LocalDateTime`으로 매핑. 입력의 `+09:00` 오프셋은 벽시계 값으로 취급.
+- **연관관계(FK 제약)를 두지 않는다.** 테이블 간 참조는 ID 값으로만 느슨하게 연결하며, JPA 엔티티도 `@ManyToOne`/`@OneToMany` 없이 참조 ID를 일반 컬럼(예: `courseId: String`)으로 갖는다. (조인이 필요한 조회는 리포지토리/쿼리에서 명시적으로 처리)
+- Flyway H2 지원은 `flyway-core`에 포함되어 별도 `flyway-database-h2` 모듈 불필요.
 
 ## 도메인 / 비즈니스 규칙 (구현 기준)
 
