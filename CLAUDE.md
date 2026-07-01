@@ -30,7 +30,8 @@
 - JPA 엔티티를 위해 `kotlin("plugin.jpa")` + `allOpen`이 `@Entity`/`@MappedSuperclass`/`@Embeddable`에 적용되어 있다(엔티티 클래스를 `open`으로 선언할 필요 없음).
 
 ### 스키마 / DB
-- **스키마는 Flyway가 소유한다.** 마이그레이션 위치: `src/main/resources/db/migration/`(현재 `V1__init.sql`). 테이블 변경은 새 `V{n}__*.sql`을 추가하는 방식으로 한다(기존 파일 수정은 지양 — 단, 인메모리라 매 부팅 이력이 초기화되어 개발 중엔 수정해도 무방).
+- **스키마는 Flyway가 소유한다.** 마이그레이션 위치: `src/main/resources/db/migration/`(`V1__init.sql` 스키마, `V2__seed_sample_data.sql` 샘플 데이터). 테이블 변경은 새 `V{n}__*.sql`을 추가하는 방식으로 한다(기존 파일 수정은 지양 — 단, 인메모리라 매 부팅 이력이 초기화되어 개발 중엔 수정해도 무방).
+- 샘플 데이터는 V2 시드로 매 부팅 재적재(크리에이터 5·강의 10·판매 32·취소 14). 명세 검증 시나리오(creator-1 2025-03, 월 경계, creator-3 빈 월)는 고정이므로 **해당 크리에이터/월 데이터는 건드리지 말 것**.
 - Hibernate 자동 DDL은 끈다: `spring.jpa.hibernate.ddl-auto: validate` → 엔티티 매핑이 Flyway 스키마와 어긋나면 부팅 시 검출된다.
 - ID는 샘플 데이터의 비즈니스 키(`creator-1`, `sale-1` 등)를 그대로 쓰는 **VARCHAR 자연키**. 금액은 원 단위 `BIGINT`.
 - **모든 시각은 KST 기준**: 컬럼은 `TIMESTAMP`(WITHOUT TIME ZONE, MySQL `DATETIME` 급), 엔티티는 `LocalDateTime`으로 매핑. 입력의 `+09:00` 오프셋은 벽시계 값으로 취급.
