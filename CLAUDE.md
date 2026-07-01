@@ -25,6 +25,7 @@
 ## 기술 스택 / 버전 제약 (중요)
 
 - Kotlin 2.3.21 (JVM 17), Gradle 9.5.1 (Kotlin DSL), H2 인메모리.
+- 조회 쿼리는 **QueryDSL** 사용.
 - **Spring Boot는 반드시 3.5.x 라인을 유지할 것.**
 - JPA 엔티티를 위해 `kotlin("plugin.jpa")` + `allOpen`이 `@Entity`/`@MappedSuperclass`/`@Embeddable`에 적용되어 있다(엔티티 클래스를 `open`으로 선언할 필요 없음).
 
@@ -65,6 +66,14 @@ controller/        # REST 컨트롤러
 ```
 
 - 요청/응답 DTO는 `controller/dto`, 조회 프로젝션은 `repository/dto`. 공용 평면 `dto/` 패키지는 만들지 않는다.
+- `config/`에 설정 클래스(`QueryDslConfig` 등).
+
+### 리포지토리 / 조회 컨벤션
+- `XxxRepository : JpaRepository<T, String>`는 **쓰기(`save` 등)** 위주로만 사용.
+- **모든 조회는 커스텀 프래그먼트**로: `XxxCustomRepository`(시그니처) + `XxxCustomRepositoryImpl`(`JPAQueryFactory` 주입, QueryDSL `fetch`/`fetchOne`). `XxxRepository`가 `XxxCustomRepository`을 상속.
+- 조회를 위한 parameter는 `repository/dto`에 정의.
+- 연관관계가 없으므로 조인은 QueryDSL에서 `join(...).on(a.xxxId.eq(b.id))`로 명시.
+- 구체 조회 메서드는 그것을 쓰는 기능 이슈에서 각 커스텀 프래그먼트에 추가한다.
 
 ## 문서
 
