@@ -51,9 +51,20 @@
 
 실제 결제 시스템 연동은 불필요 — 데이터는 API 또는 직접 삽입으로 등록한다.
 
-## 패키지
+## 패키지 / 구조
 
-루트 패키지는 `com.wonjiyap.creatorsettlementapi`.
+루트 패키지는 `com.wonjiyap.creatorsettlementapi`. **계층별 패키지 + DTO는 계층 하위에 중첩**한다:
+
+```
+domain/            # 엔티티 (Creator, Course, SaleRecord, CancelRecord)
+repository/        # Spring Data JPA 리포지토리
+  dto/             # 조회 프로젝션 DTO (집계/조인 결과)
+service/           # 비즈니스 로직 (필요 시 service 계산 결과 모델)
+controller/        # REST 컨트롤러
+  dto/             # 요청/응답 DTO
+```
+
+- 요청/응답 DTO는 `controller/dto`, 조회 프로젝션은 `repository/dto`. 공용 평면 `dto/` 패키지는 만들지 않는다.
 
 ## 문서
 

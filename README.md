@@ -41,6 +41,18 @@
 
 ## API 목록 및 예시
 ## 데이터 모델 설명
+연관관계 매핑 없이 각 엔티티는 참조 대상을 **ID 값**으로만 보유한다. (스키마는 Flyway `V1__init.sql`이 소유)
+
+| 엔티티 / 테이블 | 컬럼 | 설명 |
+|-----------------|------|------|
+| `Creator` / `creator` | `id`, `name` | 크리에이터 |
+| `Course` / `course` | `id`, `creatorId`, `title` | 강의 (→ creator 참조) |
+| `SaleRecord` / `sale_record` | `id`, `courseId`, `studentId`, `amount`, `paidAt` | 판매 내역 (→ course 참조) |
+| `CancelRecord` / `cancel_record` | `id`, `saleRecordId`, `refundAmount`, `canceledAt` | 취소(환불) 내역 (→ sale_record 참조) |
+
+- ID는 비즈니스 키(`creator-1`, `sale-1` …)를 그대로 쓰는 문자열 자연키.
+- 금액(`amount`, `refundAmount`)은 원 단위 정수(`Long`/`BIGINT`), 시각(`paidAt`, `canceledAt`)은 `LocalDateTime`(KST).
+
 ## 요구사항 해석 및 가정
 - 모든 시각은 **KST 기준**으로 저장·해석한다. DB 컬럼은 타임존 없는 `TIMESTAMP`(엔티티 `LocalDateTime`)를 사용하고, 입력에 포함된 `+09:00` 오프셋은 KST 벽시계 값으로 취급한다.
 
