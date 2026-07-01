@@ -67,6 +67,7 @@ controller/        # REST 컨트롤러
 ```
 
 - 요청/응답 DTO는 `controller/dto`, 조회 프로젝션은 `repository/dto`. 공용 평면 `dto/` 패키지는 만들지 않는다.
+- **JSON 요청·응답은 전역 snake_case**(`application.yml`의 `spring.jackson.property-naming-strategy: SNAKE_CASE`). 개별 DTO에 `@JsonNaming`을 붙이지 않는다. 이 설정은 **Jackson 직렬화(HTTP 본문)에만** 적용되며, 컨트롤러↔서비스 간 코드로 넘기는 `service/dto`(예: `SaleRecordCreateParam`)에는 무관하다(내부 Kotlin 객체, camelCase 유지).
 - `config/`에 설정 클래스(`QueryDslConfig` 등).
 
 ### 리포지토리 / 조회 컨벤션
