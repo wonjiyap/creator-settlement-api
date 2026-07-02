@@ -29,6 +29,7 @@ dependencies {
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.17")
     implementation("org.flywaydb:flyway-core")
+    implementation("org.apache.poi:poi-ooxml:5.4.1")
     implementation("com.querydsl:querydsl-jpa::jakarta")
     kapt("com.querydsl:querydsl-apt::jakarta")
     kapt("jakarta.annotation:jakarta.annotation-api")

@@ -10,6 +10,7 @@
 - **운영자용 정산 집계**: 특정 기간 내 전체 크리에이터의 정산 현황 및 합계 조회
 - **정산 상태 관리 & 중복 정산 방지**: 크리에이터+월 단위 정산 스냅샷 생성(PENDING) 및 상태 전이(PENDING → CONFIRMED → PAID), 동일 크리에이터+월 중복 정산 차단(409)
 - **수수료율 변경 이력 관리**: 월 단위 수수료율 변경 등록·이력 조회, 정산 계산 시 해당 월에 유효했던 율 적용(과거 정산은 당시 수수료율)
+- **정산 내역 CSV/엑셀 다운로드**: 정산 목록을 동일 필터로 CSV(UTF-8 BOM)·엑셀(xlsx) 파일로 내보내기
 
 정산 기간 기준은 **결제 완료 일시(취소는 취소 일시) 기준 / KST**이며, 월 경계는 해당 월 1일 00:00:00 ~ 말일 23:59:59 로 처리합니다.
 
@@ -22,6 +23,7 @@
 | Database | H2 |
 | DB Migration | Flyway |
 | API Docs | Swagger UI |
+| Excel Export | Apache POI (poi-ooxml) |
 
 ## 실행 방법
 **요구 사항**: JDK 17 이상 (별도 DB 설치 불필요 — H2 사용)
@@ -278,6 +280,50 @@ GET /api/settlement/list?creator_id=creator-1&status=PAID
 | 잘못된 연월 형식(`month`) | `400` | `{ "code": 400, "message": "잘못된 연월 형식입니다: ..." }` |
 | 잘못된 상태 값(`status`) | `400` | `{ "code": 400, "message": "요청 파라미터 형식이 올바르지 않습니다: status" }` |
 
+### 정산 목록 CSV 다운로드 — `POST /api/settlement/download/csv`
+- 정산 목록을 CSV 파일로 다운로드한다.
+- **필터는 목록 조회(`/list`)와 동일한 항목을 JSON 본문**으로 받으며(`creator_id`·`month`·`status` 모두 선택), **본문을 생략하면 전체**를 내려받는다.
+- 결과가 없으면 헤더 행만 담긴 파일을 반환한다. 
+- 파일은 **UTF-8 BOM**을 포함해 엑셀에서 한글이 깨지지 않고 바로 열린다. 컬럼 헤더는 한글이다(운영자가 파일을 바로 읽는 용도).
+
+요청
+```http
+POST /api/settlement/download/csv
+Content-Type: application/json
+
+{
+  "status": "PAID"
+}
+```
+
+응답 `200 OK` (`Content-Type: text/csv;charset=UTF-8`, `Content-Disposition: attachment; filename="settlements.csv"`)
+```csv
+정산 ID,크리에이터 ID,정산 월,상태,총 판매,총 환불,순 판매,수수료율,수수료,정산 예정 금액,판매 건수,취소 건수,생성 일시,확정 일시,지급 일시
+settlement-3,creator-1,2025-04,PAID,130000,80000,50000,0.2000,10000,40000,2,1,2025-05-01 10:00:00,2025-05-03 10:00:00,2025-05-10 10:00:00
+settlement-2,creator-4,2025-03,PAID,440000,160000,280000,0.2000,56000,224000,5,4,2025-04-01 10:00:00,2025-04-03 10:00:00,2025-04-10 10:00:00
+```
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 잘못된 연월 형식(`month`) | `400` | `{ "code": 400, "message": "잘못된 연월 형식입니다: ..." }` |
+| 잘못된 상태 값(`status`) 등 본문 파싱 실패 | `400` | `{ "code": 400, "message": "요청 본문을 읽을 수 없습니다. 형식을 확인해 주세요." }` |
+| POST가 아닌 메서드(GET 등) | `405` | `{ "code": 405, "message": "지원하지 않는 HTTP 메서드입니다: GET" }` |
+
+### 정산 목록 엑셀 다운로드 — `POST /api/settlement/download/excel`
+정산 목록을 엑셀(xlsx) 파일로 다운로드한다. 필터(JSON 본문, 생략 가능)·컬럼 구성은 CSV 다운로드와 동일하며, 금액·건수는 숫자 셀로 저장된다.
+
+요청
+```http
+POST /api/settlement/download/excel
+Content-Type: application/json
+
+{
+  "creator_id": "creator-4"
+}
+```
+
+응답 `200 OK` (`Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `Content-Disposition: attachment; filename="settlements.xlsx"`)
+
 ### 정산 단건 조회 — `GET /api/settlement/{id}`
 정산 스냅샷 단건을 조회한다.
 
@@ -422,6 +468,11 @@ GET /api/fee-rate/list
 - 잘못된 상태 전이도 `400`이 아닌 **`409`** 를 씁니다 — RFC 9110의 409는 "리소스의 현재 상태와의 충돌"이고, 이 프로젝트에서 `400`은 요청 형식 오류에 일관되게 쓰고 있기 때문입니다.
 - 상태 전이 검증은 서비스가 아닌 **엔티티 메서드(`Settlement.confirm`/`pay`)** 에 두어, 상태 불변식이 상태와 같은 곳에서 강제되도록 했습니다.
 
+### CSV/엑셀 내보내기는 컨트롤러(표현 계층)에서 변환
+- 다운로드 API는 목록 조회와 **동일한 서비스 메서드(`SettlementService.list`)를 재사용**하고, 그 결과를 CSV/xlsx로 직렬화하는 작업만 컨트롤러에서 수행합니다.
+- "같은 데이터를 어떤 표현으로 내보내느냐"는 표현 계층의 관심사라는 판단이며, 덕분에 필터·정렬 동작이 목록 API와 어긋날 수 없습니다.
+- CSV와 엑셀은 공용 컬럼 정의(헤더명 + 값 추출)를 공유해 두 포맷의 컬럼이 항상 일치합니다.
+
 ### 예외 처리 일원화 (ErrorCode + 전역 핸들러)
 - 도메인 예외는 단일 `CreatorException(errorCode, message = errorCode.message)`로 던지고, `ErrorCode` enum이 `(HTTP 상태 코드, 기본 메시지)`를 보유합니다. 기본 메시지를 쓰거나 던질 때 상황별 메시지를 주입할 수 있습니다.
 - `@RestControllerAdvice`(전역 핸들러) 한 곳에서 모든 예외를 **`{ code, message }` 단일 포맷**으로 변환합니다.
@@ -434,6 +485,7 @@ GET /api/fee-rate/list
 | `MethodArgumentTypeMismatchException` | `400` | 쿼리 파라미터 타입 오류(예: 날짜 형식) |
 | `MissingServletRequestParameterException` | `400` | 필수 쿼리 파라미터 누락 |
 | `HttpMessageNotReadableException` | `400` | 잘못된 JSON·필수 필드 누락 등 본문 파싱 실패 |
+| `HttpRequestMethodNotSupportedException` | `405` | 지원하지 않는 HTTP 메서드(예: POST 전용 다운로드에 GET) |
 | `NoResourceFoundException` | `404` | 매핑되지 않은 경로 |
 | 그 외 `Exception` | `500` | 예상치 못한 오류(내부 메시지 미노출, 서버 로그로 기록) |
 
@@ -447,8 +499,9 @@ GET /api/fee-rate/list
 - 그 외에 등록/조회 성공·실패, 검증 실패, 예외 처리 등 **동작 검증용 service 테스트**(`SaleServiceTest` / `CancelRecordServiceTest` / `SettlementServiceTest`)가 추가로 구현되어 있다.
 
 ## 미구현 / 제약사항
-- **인증/인가**: 구현하지 않음(범위 외). `creator_id`를 신뢰하고 처리한다.
+- **인증/인가**: 구현하지 않음(범위 외). `creator_id`를 신뢰하고 처리한다. 수수료율 변경·기간 집계 등 운영자 성격 API도 일반 API로 노출된다.
 - **DB는 인메모리 H2**: 애플리케이션 종료 시 데이터가 초기화되며, 매 기동 시 Flyway 시드로 동일 데이터가 재적재된다. 운영 DB(MySQL 등) 연동은 범위 외.
+- **정산 스냅샷의 재계산·취소 미지원**: 동일 크리에이터+월 정산은 상태 무관 409로 거부되며, 잘못 생성한 정산을 삭제하고 다시 만드는 흐름은 범위 외.
 
 ## AI 활용 범위
 - 이 프로젝트는 Claude Code(AI 페어 프로그래밍)를 활용해 진행했다.
@@ -458,7 +511,7 @@ GET /api/fee-rate/list
 - 초기 환경 설정: `.gitignore` 작성, 의존성 설정 및 기본 세팅
 - 작업 단위를 **GitHub 이슈로 분해·생성**
 - 구현/테스트 코드 작성: Flyway 스키마·시드 데이터, 엔티티·리포지토리, QueryDSL 세팅, API 코드 생성, 전역 예외 핸들러(`@RestControllerAdvice`), 서비스 테스트
-- 실제 빌드·테스트·데이터 집계로 **검증**(예: 명세 시나리오 수치 대조)
+- 실제 빌드·테스트·API 호출(E2E)로 **검증**(예: 명세 시나리오 수치 대조)
 - `README.md` / `CLAUDE.md` 문서화
 
 ### 개발자(본인)가 한 것
@@ -470,5 +523,7 @@ GET /api/fee-rate/list
   - 커스텀 리포지토리 패턴(`fetch`/`fetchOne` + 파라미터 DTO), 조회는 QueryDSL로만
   - 응답용 연관 데이터(course/creator) 조립을 in-memory 배치 방식(`@Transient` + `fromCourses`/`fromCreators` 확장함수)으로 직접 설계·구현
   - 테스트 전략(컨트롤러 테스트는 생략, 서비스/시나리오 테스트 중심)
-- 직접 코드 리팩터링·네이밍 정리(`SaleRecord*` 계열 등), AI 산출물 리뷰 및 수정 지시
+  - 선택 과제의 도메인 규칙 확정: 정산 확정 단위(크리에이터+월)·단방향 상태 전이·중복 정산 무조건 409, 수수료율의 월 단위 적용·소급 등록 금지, 기간 집계의 월별 분해 합산, 다운로드는 목록 조회를 재사용해 컨트롤러에서 변환
+- **AI 산출물 리뷰·교정**: 트랜잭션 처리 방식, 인덱스 누락 등 기술적 결함을 직접 잡아 수정을 지시하고, API 형태(경로·HTTP 메서드·요청/입력 형식)와 사용성 관점의 재설계를 주도했으며, 실익 없는 리팩터링 제안은 반려하는 등 코드 방향과 품질을 통제
+- 직접 코드 리팩터링·네이밍 정리(`SaleRecord*` 계열 등), 모든 API 응답·파일 산출물 직접 호출·검수
 - 최종 의사결정 및 **모든 커밋 수행**

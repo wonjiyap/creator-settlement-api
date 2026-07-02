@@ -65,6 +65,13 @@ data class SettlementCreateRequest(
     val month: String,
 )
 
+/** 다운로드 필터 (목록 조회와 동일, 모두 선택). 본문 자체를 생략하면 전체 다운로드. */
+data class SettlementDownloadRequest(
+    val creatorId: String? = null,
+    val month: String? = null,
+    val status: SettlementStatus? = null,
+)
+
 data class SettlementDetailResponse(
     val id: String,
     val creatorId: String,
