@@ -8,6 +8,7 @@
 - **판매/취소 내역 관리**: 판매 내역 등록, 취소(환불) 내역 등록, 크리에이터별·기간별 판매 내역 조회
 - **크리에이터별 월별 정산 계산**: 총 판매 / 환불 / 순 판매 / 수수료 / 정산 예정 금액 및 판매·취소 건수 산출
 - **운영자용 정산 집계**: 특정 기간 내 전체 크리에이터의 정산 현황 및 합계 조회
+- **정산 상태 관리 & 중복 정산 방지**: 크리에이터+월 단위 정산 스냅샷 생성(PENDING) 및 상태 전이(PENDING → CONFIRMED → PAID), 동일 크리에이터+월 중복 정산 차단(409)
 
 정산 기간 기준은 **결제 완료 일시(취소는 취소 일시) 기준 / KST**이며, 월 경계는 해당 월 1일 00:00:00 ~ 말일 23:59:59 로 처리합니다.
 
@@ -186,6 +187,108 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 - `total_settlement_amount`는 목록의 `settlement_amount` 합계.
 - `from > to` → `400`, 날짜 형식 오류 → `400`.
 
+### 정산 생성(확정 스냅샷) — `POST /api/settlement`
+`creator_id` + `month`(`YYYY-MM`) 단위로 정산을 **스냅샷으로 저장**한다. 금액은 생성 시점의 월별 정산 계산으로 고정되며(이후 판매/취소 추가 미반영), 생성 당시 수수료율(`fee_rate`)도 함께 저장한다. 초기 상태는 `PENDING`.
+**동일 크리에이터+월에 정산이 이미 존재하면 상태와 무관하게 `409`로 거부**한다(서비스 사전 조회 + DB 유니크 제약 `(creator_id, period)` 이중 방어).
+
+요청
+```http
+POST /api/settlement
+Content-Type: application/json
+
+{
+  "creator_id": "creator-1",
+  "month": "2025-03"
+}
+```
+
+응답 `200 OK`
+```json
+{
+  "id": "settlement-8328e301-…",
+  "creator_id": "creator-1",
+  "month": "2025-03",
+  "status": "PENDING",
+  "total_sales": 260000,
+  "total_refund": 110000,
+  "net_sales": 150000,
+  "fee_rate": 0.20,
+  "fee": 30000,
+  "settlement_amount": 120000,
+  "sale_count": 4,
+  "cancel_count": 2,
+  "created_at": "2025-07-01 10:00:00",
+  "confirmed_at": null,
+  "paid_at": null
+}
+```
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 유효성 위반(`creator_id`/`month` 공백) | `400` | `{ "code": 400, "message": "creator_id: ..." }` |
+| 잘못된 연월 형식 | `400` | `{ "code": 400, "message": "잘못된 연월 형식입니다: 2025-13 (예: 2025-03)" }` |
+| 존재하지 않는 크리에이터 | `404` | `{ "code": 404, "message": "존재하지 않는 크리에이터입니다: creator-없음" }` |
+| 동일 크리에이터+월 정산 존재(상태 무관) | `409` | `{ "code": 409, "message": "이미 해당 월의 정산이 존재합니다: creator-1 / 2025-03 (상태: PENDING)" }` |
+
+### 정산 확정 — `POST /api/settlement/{id}/confirm`
+`PENDING` 상태의 정산을 `CONFIRMED`로 전이하고 `confirmed_at`을 기록한다. 상태 전이는 **PENDING → CONFIRMED → PAID 단방향만 허용**하며, 그 외(역행·재호출)는 `409`.
+
+요청
+```http
+POST /api/settlement/settlement-8328e301-…/confirm
+```
+
+응답 `200 OK` — 생성 응답과 동일 형식(`status: "CONFIRMED"`, `confirmed_at` 채워짐)
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 존재하지 않는 정산 | `404` | `{ "code": 404, "message": "존재하지 않는 정산입니다: settlement-없음" }` |
+| 현재 상태가 `PENDING`이 아님 | `409` | `{ "code": 409, "message": "PENDING 상태의 정산만 확정할 수 있습니다: 현재 PAID" }` |
+
+### 정산 지급 — `POST /api/settlement/{id}/pay`
+`CONFIRMED` 상태의 정산을 `PAID`로 전이하고 `paid_at`을 기록한다. `PENDING`에서 바로 지급(건너뛰기)은 `409`.
+
+요청
+```http
+POST /api/settlement/settlement-8328e301-…/pay
+```
+
+응답 `200 OK` — 생성 응답과 동일 형식(`status: "PAID"`, `paid_at` 채워짐)
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 존재하지 않는 정산 | `404` | `{ "code": 404, "message": "존재하지 않는 정산입니다: settlement-없음" }` |
+| 현재 상태가 `CONFIRMED`가 아님 | `409` | `{ "code": 409, "message": "CONFIRMED 상태의 정산만 지급 처리할 수 있습니다: 현재 PENDING" }` |
+
+### 정산 목록 조회 — `GET /api/settlement/list`
+저장된 정산 스냅샷 목록을 조회한다. `creator_id`·`month`(`YYYY-MM`)·`status`(`PENDING`/`CONFIRMED`/`PAID`)는 **모두 선택**이며 각각 독립 적용된다(생략 시 전체). `created_at` 내림차순 정렬.
+
+요청
+```http
+GET /api/settlement/list?creator_id=creator-1&status=PAID
+```
+
+응답 `200 OK` — 생성 응답과 동일 형식의 배열
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 잘못된 연월 형식(`month`) | `400` | `{ "code": 400, "message": "잘못된 연월 형식입니다: ..." }` |
+| 잘못된 상태 값(`status`) | `400` | `{ "code": 400, "message": "요청 파라미터 형식이 올바르지 않습니다: status" }` |
+
+### 정산 단건 조회 — `GET /api/settlement/{id}`
+정산 스냅샷 단건을 조회한다.
+
+요청
+```http
+GET /api/settlement/settlement-8328e301-…
+```
+
+응답 `200 OK` — 생성 응답과 동일 형식
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 존재하지 않는 정산 | `404` | `{ "code": 404, "message": "존재하지 않는 정산입니다: settlement-없음" }` |
+
 ## 데이터 모델 설명
 연관관계 매핑 없이 각 엔티티는 참조 대상을 **ID 값**으로만 보유한다. (스키마는 Flyway `V1__init.sql`이 소유)
 
@@ -195,13 +298,16 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 | `Course` / `course` | `id`, `creatorId`, `title` | 강의 (→ creator 참조) |
 | `SaleRecord` / `sale_record` | `id`, `courseId`, `studentId`, `amount`, `paidAt` | 판매 내역 (→ course 참조) |
 | `CancelRecord` / `cancel_record` | `id`, `saleRecordId`, `refundAmount`, `canceledAt` | 취소(환불) 내역 (→ sale_record 참조) |
+| `Settlement` / `settlement` | `id`, `creatorId`, `period`, `status`, 금액 스냅샷(`totalSales`…`settlementAmount`), `feeRate`, `createdAt`, `confirmedAt`, `paidAt` | 정산 확정 스냅샷 (→ creator 참조). `(creator_id, period)` 유니크 제약으로 중복 정산 방지, `status`는 enum을 `VARCHAR`(STRING)로 저장 |
 
 - ID는 비즈니스 키(`creator-1`, `sale-1` …)를 그대로 쓰는 문자열 자연키.
 - 금액(`amount`, `refundAmount`)은 원 단위 정수(`Long`/`BIGINT`), 시각(`paidAt`, `canceledAt`)은 `LocalDateTime`(KST).
+- 정산 대상 연월 컬럼은 `period`(`"YYYY-MM"`)다 — H2에서 `MONTH`가 예약어라 컬럼명으로 쓰지 않는다(API에서는 `month`로 노출).
 
 ### 샘플 데이터 & 검증 시나리오
-- 애플리케이션 시작 시 Flyway 시드 마이그레이션(`V2__seed_sample_data.sql`)으로 자동 적재된다.
+- 애플리케이션 시작 시 Flyway 시드 마이그레이션(`V2__seed_sample_data.sql` 판매/취소, `V4__seed_settlement_data.sql` 정산 스냅샷)으로 자동 적재된다.
 - 명세 제공 시나리오(`명세`)는 그대로 보존하고, 직접 검증용 케이스(`추가`)는 명세 시나리오와 겹치지 않는 크리에이터/월만 사용한다.
+- 정산 스냅샷 시드(`settlement-1`~`5`)는 V2 판매/취소 데이터로 계산한 값을 그대로 저장했으며 상태별(PENDING 2·CONFIRMED 1·PAID 2)로 구성했다 — 부팅 직후 목록/전이 API를 바로 시연할 수 있다. 시드 수치가 실제 계산과 일치하는지는 `SettlementServiceTest` › `시드 정산 - 스냅샷 금액이 판매·취소 데이터 계산과 일치한다`로 검증한다.
 
 각 시나리오가 어느 테스트에서 검증되는지 마지막 열에 표기한다(리뷰어가 시나리오 → 테스트로 추적 가능). 메서드명은 해당 파일에서 검색 가능한 고유 문구다.
 
@@ -227,6 +333,11 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 - **수수료**는 순 판매액 × 수수료율(기본 20%)이며 원 단위로 **반올림**(HALF_UP)한다.
 - 특정 기간에 환불이 판매를 초과하면 순 판매·정산액이 **음수**가 될 수 있으며, 공식(`정산 = 순 판매 − 수수료`)을 음수에도 일관 적용한다.
 - 월별 정산 조회 시 **존재하지 않는 크리에이터는 `404`**, **존재하지만 해당 월 판매가 없으면 `0`(빈 월)**으로 구분해 응답한다.
+- **정산 확정은 크리에이터+월 단위**로만 지원한다(월별 정산 계산과 동일 단위). "동일 기간 중복 정산"의 기간 정의도 이 단위다.
+- **중복 정산은 상태와 무관하게 무조건 `409`로 거부**한다. 기존 정산 삭제·재계산(재정산)은 범위 외.
+- **상태 전이는 PENDING → CONFIRMED → PAID 단방향만** 허용한다. 역행·건너뛰기·재호출은 모두 `409`(리소스 현재 상태와의 충돌).
+- **정산 스냅샷은 생성 시점 계산으로 고정**된다. 생성 후 해당 월에 판매/취소가 추가되어도 스냅샷에 반영되지 않는다(즉석 계산 API인 `/monthly`는 반영됨).
+- 스냅샷에는 **생성 당시 수수료율(`fee_rate`)을 함께 저장**한다 — 추후 수수료율 변경 이력(과거 정산은 당시 율 적용) 확장 지점.
 
 ## 설계 결정과 이유
 
@@ -245,13 +356,20 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 ### 수수료율을 정책 객체로 분리
 수수료율은 현재 고정 20%지만, 값을 코드에 하드코딩하지 않고 설정(`settlement.fee-rate`)으로 분리하고 계산을 `FeePolicy` 컴포넌트에 위임합니다. 수수료율 변경 시 설정만 바꾸면 되고, 추후 "수수료율 변경 이력(과거 정산은 당시 율 적용)"으로 확장할 지점이 명확합니다.
 
+### 정산 상태 관리: 스냅샷 영속화 + 이중 방어
+- 정산 확정은 조회 시점 즉석 계산과 분리해 **`settlement` 테이블에 스냅샷으로 영속화**합니다. 월별 정산 조회(`getMonthly`)와 스냅샷 생성(`create`)은 같은 private 계산 메서드(`calculateMonthly`)를 공유해 두 경로의 수치가 어긋나지 않습니다(공개 서비스 메서드 간 self-invocation은 `@Transactional` 프록시를 우회하므로 지양).
+- 중복 정산 방지는 **서비스 사전 조회(1차) + DB 유니크 제약 `(creator_id, period)`(2차)** 이중 방어입니다. 사전 조회를 통과한 경합 케이스는 제약 위반(`DataIntegrityViolationException`)이 전역 핸들러에서 `409`로 응답됩니다.
+- 잘못된 상태 전이도 `400`이 아닌 **`409`** 를 씁니다 — RFC 9110의 409는 "리소스의 현재 상태와의 충돌"이고, 이 프로젝트에서 `400`은 요청 형식 오류에 일관되게 쓰고 있기 때문입니다.
+- 상태 전이 검증은 서비스가 아닌 **엔티티 메서드(`Settlement.confirm`/`pay`)** 에 두어, 상태 불변식이 상태와 같은 곳에서 강제되도록 했습니다.
+
 ### 예외 처리 일원화 (ErrorCode + 전역 핸들러)
 - 도메인 예외는 단일 `CreatorException(errorCode, message = errorCode.message)`로 던지고, `ErrorCode` enum이 `(HTTP 상태 코드, 기본 메시지)`를 보유합니다. 기본 메시지를 쓰거나 던질 때 상황별 메시지를 주입할 수 있습니다.
 - `@RestControllerAdvice`(전역 핸들러) 한 곳에서 모든 예외를 **`{ code, message }` 단일 포맷**으로 변환합니다.
 
 | 예외 | 상태 | 케이스 |
 |------|------|--------|
-| `CreatorException` | `errorCode.code` | 도메인 규칙 위반(강의/크리에이터 없음=404, 환불 초과 등=400) |
+| `CreatorException` | `errorCode.code` | 도메인 규칙 위반(강의/크리에이터 없음=404, 환불 초과 등=400, 중복 정산·잘못된 상태 전이=409) |
+| `DataIntegrityViolationException` | `409` | DB 무결성 제약 위반(유니크 제약 등 — 사전 검증을 통과한 경합의 2차 방어) |
 | `MethodArgumentNotValidException` | `400` | `@Valid` 본문 검증 실패 |
 | `MethodArgumentTypeMismatchException` | `400` | 쿼리 파라미터 타입 오류(예: 날짜 형식) |
 | `MissingServletRequestParameterException` | `400` | 필수 쿼리 파라미터 누락 |
@@ -279,7 +397,7 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 ### AI(Claude)가 한 것
 - 초기 환경 설정: `.gitignore` 작성, 의존성 설정 및 기본 세팅
 - 작업 단위를 **GitHub 이슈로 분해·생성**
-- 구현/테스트 코드 작성: Flyway 스키마·시드 데이터, 엔티티·리포지토리, QueryDSL 세팅, 판매 등록/목록 조회·취소 등록 API, 월별 정산 계산·운영자 기간 집계 API, 전역 예외 핸들러(`@RestControllerAdvice`), 서비스 테스트
+- 구현/테스트 코드 작성: Flyway 스키마·시드 데이터, 엔티티·리포지토리, QueryDSL 세팅, API 코드 생성, 전역 예외 핸들러(`@RestControllerAdvice`), 서비스 테스트
 - 실제 빌드·테스트·데이터 집계로 **검증**(예: 명세 시나리오 수치 대조)
 - `README.md` / `CLAUDE.md` 문서화
 

@@ -1,11 +1,23 @@
 package com.wonjiyap.creatorsettlementapi.service.dto
 
+import com.wonjiyap.creatorsettlementapi.domain.SettlementStatus
 import java.math.BigDecimal
 import java.time.LocalDate
 
 data class MonthlySettlementParam(
     val creatorId: String,
     val month: String,
+)
+
+data class SettlementCreateParam(
+    val creatorId: String,
+    val month: String,
+)
+
+data class SettlementListParam(
+    val creatorId: String? = null,
+    val month: String? = null,
+    val status: SettlementStatus? = null,
 )
 
 data class PeriodSettlementParam(

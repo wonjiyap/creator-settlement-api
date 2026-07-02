@@ -1,6 +1,7 @@
 package com.wonjiyap.creatorsettlementapi.exception
 
 import org.slf4j.LoggerFactory
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.ResponseEntity
 import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.web.bind.MethodArgumentNotValidException
@@ -41,6 +42,13 @@ class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException::class)
     fun handleUnreadable(e: HttpMessageNotReadableException): ResponseEntity<ErrorResponse> =
         badRequest("요청 본문을 읽을 수 없습니다. 형식을 확인해 주세요.")
+
+    /** DB 무결성 제약 위반(유니크 제약 등) → 409. 사전 검증을 통과한 경합 케이스의 2차 방어. */
+    @ExceptionHandler(DataIntegrityViolationException::class)
+    fun handleDataIntegrity(e: DataIntegrityViolationException): ResponseEntity<ErrorResponse> =
+        ResponseEntity
+            .status(ErrorCode.CONFLICT.code)
+            .body(ErrorResponse(code = ErrorCode.CONFLICT.code, message = ErrorCode.CONFLICT.message))
 
     /** 매핑되지 않은 경로. */
     @ExceptionHandler(NoResourceFoundException::class)
