@@ -245,7 +245,17 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 
 ### 예외 처리 일원화 (ErrorCode + 전역 핸들러)
 - 도메인 예외는 단일 `CreatorException(errorCode, message = errorCode.message)`로 던지고, `ErrorCode` enum이 `(HTTP 상태 코드, 기본 메시지)`를 보유합니다. 기본 메시지를 쓰거나 던질 때 상황별 메시지를 주입할 수 있습니다.
-- `@RestControllerAdvice`(전역 핸들러)가 `CreatorException` → `errorCode.code` 상태 + `{ code, message }` 본문으로, 검증 실패 → `400` 동일 포맷으로 변환합니다. → 응답 포맷이 한 곳에서 통일됩니다.
+- `@RestControllerAdvice`(전역 핸들러) 한 곳에서 모든 예외를 **`{ code, message }` 단일 포맷**으로 변환합니다.
+
+| 예외 | 상태 | 케이스 |
+|------|------|--------|
+| `CreatorException` | `errorCode.code` | 도메인 규칙 위반(강의/크리에이터 없음=404, 환불 초과 등=400) |
+| `MethodArgumentNotValidException` | `400` | `@Valid` 본문 검증 실패 |
+| `MethodArgumentTypeMismatchException` | `400` | 쿼리 파라미터 타입 오류(예: 날짜 형식) |
+| `MissingServletRequestParameterException` | `400` | 필수 쿼리 파라미터 누락 |
+| `HttpMessageNotReadableException` | `400` | 잘못된 JSON·필수 필드 누락 등 본문 파싱 실패 |
+| `NoResourceFoundException` | `404` | 매핑되지 않은 경로 |
+| 그 외 `Exception` | `500` | 예상치 못한 오류(내부 메시지 미노출, 서버 로그로 기록) |
 
 ## 테스트 실행 방법
 ```bash
