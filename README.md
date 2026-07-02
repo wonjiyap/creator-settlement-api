@@ -9,6 +9,7 @@
 - **크리에이터별 월별 정산 계산**: 총 판매 / 환불 / 순 판매 / 수수료 / 정산 예정 금액 및 판매·취소 건수 산출
 - **운영자용 정산 집계**: 특정 기간 내 전체 크리에이터의 정산 현황 및 합계 조회
 - **정산 상태 관리 & 중복 정산 방지**: 크리에이터+월 단위 정산 스냅샷 생성(PENDING) 및 상태 전이(PENDING → CONFIRMED → PAID), 동일 크리에이터+월 중복 정산 차단(409)
+- **수수료율 변경 이력 관리**: 월 단위 수수료율 변경 등록·이력 조회, 정산 계산 시 해당 월에 유효했던 율 적용(과거 정산은 당시 수수료율)
 
 정산 기간 기준은 **결제 완료 일시(취소는 취소 일시) 기준 / KST**이며, 월 경계는 해당 월 1일 00:00:00 ~ 말일 23:59:59 로 처리합니다.
 
@@ -151,6 +152,7 @@ GET /api/settlement/monthly?creator_id=creator-1&month=2025-03
 ```
 
 - `net_sales = total_sales − total_refund`, `fee = net_sales × fee_rate`(반올림), `settlement_amount = net_sales − fee`
+- `fee_rate`는 **해당 월에 유효한 수수료율**(수수료율 변경 이력 기준)이다. 예: 시드 기준 2025-06까지 20%, 2025-07부터 15%.
 - **존재하는** 크리에이터인데 해당 월 판매가 없으면 모두 `0`으로 응답한다(빈 월).
 - 특정 월에 취소만 있거나 취소액이 판매액보다 크면 `net_sales`·`settlement_amount`가 **음수**가 될 수 있다(공식을 일관 적용).
 
@@ -185,6 +187,7 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 ```
 
 - `total_settlement_amount`는 목록의 `settlement_amount` 합계.
+- 수수료는 **구간을 월별로 분해해 각 월에 유효한 수수료율로 계산 후 합산**한다. 응답의 `fee_rate`는 구간 내 적용 율이 하나일 때만 값이 있고, 율 변경을 가로지르면 `null`이다(크리에이터별 `fee`는 월별 율로 정확히 계산됨).
 - `from > to` → `400`, 날짜 형식 오류 → `400`.
 
 ### 정산 생성(확정 스냅샷) — `POST /api/settlement`
@@ -289,6 +292,58 @@ GET /api/settlement/settlement-8328e301-…
 |------|------|-----------|
 | 존재하지 않는 정산 | `404` | `{ "code": 404, "message": "존재하지 않는 정산입니다: settlement-없음" }` |
 
+### 수수료율 변경 등록 — `POST /api/fee-rate`
+`effective_month`(`YYYY-MM`)부터 다음 변경 전까지 적용될 수수료율을 등록한다.
+**과거 정산의 불변을 위해 소급 등록은 불가** — 적용 시작 월은 다음 달 이후만 허용한다.
+율은 **백분율(`fee_rate_percent`, 0 이상 100 미만, 소수점 둘째 자리까지)**로 받아 소수(scale 4)로 변환해 저장한다. 예: `12.5` → `0.1250`.
+
+> 성격상 운영자(admin) 전용 API여야 하지만, 이 과제에서는 인증/인가가 범위 외이므로 **일반 API로 제공**한다.
+
+요청
+```http
+POST /api/fee-rate
+Content-Type: application/json
+
+{
+  "effective_month": "2026-09",
+  "fee_rate_percent": 12.5
+}
+```
+
+응답 `200 OK`
+```json
+{
+  "id": "fee-rate-c8195ad4-…",
+  "effective_month": "2026-09",
+  "fee_rate": 0.1250,
+  "fee_rate_percent": 12.50,
+  "created_at": "2026-07-02 17:23:39"
+}
+```
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 유효성 위반(`fee_rate_percent` 0 미만·100 이상, 소수 3자리 이상) | `400` | `{ "code": 400, "message": "feeRatePercent: ..." }` |
+| 잘못된 연월 형식 | `400` | `{ "code": 400, "message": "잘못된 연월 형식입니다: 2026-13 (예: 2025-03)" }` |
+| 현재 월 이하(소급) | `400` | `{ "code": 400, "message": "수수료율은 다음 달 이후부터 적용할 수 있습니다(소급 변경 불가): 2025-01" }` |
+| 동일 적용 월 중복 | `409` | `{ "code": 409, "message": "이미 해당 월부터 적용되는 수수료율이 존재합니다: 2026-09 (율: 0.1250)" }` |
+
+### 수수료율 이력 조회 — `GET /api/fee-rate/list`
+수수료율 변경 이력을 적용 시작 월 내림차순으로 반환한다.
+
+요청
+```http
+GET /api/fee-rate/list
+```
+
+응답 `200 OK`
+```json
+[
+  { "id": "fee-rate-2", "effective_month": "2025-07", "fee_rate": 0.1500, "fee_rate_percent": 15.00, "created_at": "2025-06-15 10:00:00" },
+  { "id": "fee-rate-1", "effective_month": "2024-01", "fee_rate": 0.2000, "fee_rate_percent": 20.00, "created_at": "2023-12-15 10:00:00" }
+]
+```
+
 ## 데이터 모델 설명
 연관관계 매핑 없이 각 엔티티는 참조 대상을 **ID 값**으로만 보유한다. (스키마는 Flyway `V1__init.sql`이 소유)
 
@@ -299,13 +354,15 @@ GET /api/settlement/settlement-8328e301-…
 | `SaleRecord` / `sale_record` | `id`, `courseId`, `studentId`, `amount`, `paidAt` | 판매 내역 (→ course 참조) |
 | `CancelRecord` / `cancel_record` | `id`, `saleRecordId`, `refundAmount`, `canceledAt` | 취소(환불) 내역 (→ sale_record 참조) |
 | `Settlement` / `settlement` | `id`, `creatorId`, `period`, `status`, 금액 스냅샷(`totalSales`…`settlementAmount`), `feeRate`, `createdAt`, `confirmedAt`, `paidAt` | 정산 확정 스냅샷 (→ creator 참조). `(creator_id, period)` 유니크 제약으로 중복 정산 방지, `status`는 enum을 `VARCHAR`(STRING)로 저장 |
+| `FeeRateHistory` / `fee_rate_history` | `id`, `effectiveMonth`, `feeRate`, `createdAt` | 수수료율 변경 이력. `effectiveMonth`("YYYY-MM")부터 다음 변경 전까지 적용, `effective_month` 유니크 |
 
 - ID는 비즈니스 키(`creator-1`, `sale-1` …)를 그대로 쓰는 문자열 자연키.
 - 금액(`amount`, `refundAmount`)은 원 단위 정수(`Long`/`BIGINT`), 시각(`paidAt`, `canceledAt`)은 `LocalDateTime`(KST).
 - 정산 대상 연월 컬럼은 `period`(`"YYYY-MM"`)다 — H2에서 `MONTH`가 예약어라 컬럼명으로 쓰지 않는다(API에서는 `month`로 노출).
 
 ### 샘플 데이터 & 검증 시나리오
-- 애플리케이션 시작 시 Flyway 시드 마이그레이션(`V2__seed_sample_data.sql` 판매/취소, `V4__seed_settlement_data.sql` 정산 스냅샷)으로 자동 적재된다.
+- 애플리케이션 시작 시 Flyway 시드 마이그레이션(`V2__seed_sample_data.sql` 판매/취소, `V4__seed_settlement_data.sql` 정산 스냅샷, `V6__seed_fee_rate_history.sql` 수수료율 이력)으로 자동 적재된다.
+- 수수료율 이력 시드: **2024-01부터 20%, 2025-07부터 15%(데모용 인하)**. 기존 검증 시나리오 구간(2024-11 ~ 2025-06)은 전부 20%라 시나리오 수치에 영향이 없다.
 - 명세 제공 시나리오(`명세`)는 그대로 보존하고, 직접 검증용 케이스(`추가`)는 명세 시나리오와 겹치지 않는 크리에이터/월만 사용한다.
 - 정산 스냅샷 시드(`settlement-1`~`5`)는 V2 판매/취소 데이터로 계산한 값을 그대로 저장했으며 상태별(PENDING 2·CONFIRMED 1·PAID 2)로 구성했다 — 부팅 직후 목록/전이 API를 바로 시연할 수 있다. 시드 수치가 실제 계산과 일치하는지는 `SettlementServiceTest` › `시드 정산 - 스냅샷 금액이 판매·취소 데이터 계산과 일치한다`로 검증한다.
 
@@ -337,7 +394,10 @@ GET /api/settlement/settlement-8328e301-…
 - **중복 정산은 상태와 무관하게 무조건 `409`로 거부**한다. 기존 정산 삭제·재계산(재정산)은 범위 외.
 - **상태 전이는 PENDING → CONFIRMED → PAID 단방향만** 허용한다. 역행·건너뛰기·재호출은 모두 `409`(리소스 현재 상태와의 충돌).
 - **정산 스냅샷은 생성 시점 계산으로 고정**된다. 생성 후 해당 월에 판매/취소가 추가되어도 스냅샷에 반영되지 않는다(즉석 계산 API인 `/monthly`는 반영됨).
-- 스냅샷에는 **생성 당시 수수료율(`fee_rate`)을 함께 저장**한다 — 추후 수수료율 변경 이력(과거 정산은 당시 율 적용) 확장 지점.
+- 스냅샷에는 **생성 당시 수수료율(`fee_rate`)을 함께 저장**한다 — 이후 율이 바뀌어도 확정된 정산은 불변.
+- **수수료율 변경은 월 단위로만 적용**된다("YYYY-MM부터"). 정산이 월 단위인 도메인과 일치시키고, 월 중간 변경(건별 율 매칭) 복잡도를 배제했다.
+- **수수료율 소급 등록 불가**: 적용 시작 월은 다음 달 이후만 허용. 과거 월의 율이 바뀌면 "과거 정산은 당시 율" 원칙(스냅샷·즉석 계산 일치)이 깨지기 때문.
+- 기간 집계(summary)는 **구간을 월별로 분해해 각 월의 율로 수수료를 계산·합산**한다. 같은 율이 적용된 순매출끼리 묶어 계산하므로, 구간 내 율이 하나면 분해 전과 결과가 동일하다(반올림 차이 없음).
 
 ## 설계 결정과 이유
 
@@ -353,8 +413,8 @@ GET /api/settlement/settlement-8328e301-…
 ### 연관 데이터는 in-memory로 조립 (N+1 방지)
 응답에 연관 엔티티 정보(강의명, 크리에이터명 등)가 필요할 때, JPA 연관관계 대신 **참조 ID를 모아 한 번에 조회**한 뒤 `@Transient` 필드에 in-memory로 매핑합니다: `List<SaleRecord>.fromCourses(...)` → 그 안에서 `List<Course>.fromCreators(...)`. 목록 크기와 무관하게 **course 1회·creator 1회** 조회로 끝나 N+1이 발생하지 않고, 결합 시점과 대상을 코드에서 명시적으로 통제합니다. (판매 목록 조회 응답의 `course_title`/`creator_id`/`creator_name`이 이 방식으로 채워집니다.)
 
-### 수수료율을 정책 객체로 분리
-수수료율은 현재 고정 20%지만, 값을 코드에 하드코딩하지 않고 설정(`settlement.fee-rate`)으로 분리하고 계산을 `FeePolicy` 컴포넌트에 위임합니다. 수수료율 변경 시 설정만 바꾸면 되고, 추후 "수수료율 변경 이력(과거 정산은 당시 율 적용)"으로 확장할 지점이 명확합니다.
+### 수수료율을 정책 객체로 분리 + 월 단위 변경 이력
+수수료율 결정과 수수료 계산은 `FeePolicy` 컴포넌트가 전담합니다. 율은 `fee_rate_history` 테이블의 **월 단위 변경 이력**으로 관리되며, `rateFor(연월)`이 "적용 시작 월 ≤ 대상 월" 중 가장 최신 이력을 찾아 반환합니다(이력이 없는 과거 구간은 설정 `settlement.fee-rate` 기본값). 과거 정산의 불변은 두 겹으로 보장됩니다: ① 확정 스냅샷은 생성 당시 율을 저장하고, ② 율의 소급 등록 자체를 막습니다(다음 달 이후만 허용). 율 비교·그룹핑 시 `BigDecimal` scale 차이로 같은 율이 다르게 취급되지 않도록 `rateFor`는 scale 4로 정규화해 반환합니다.
 
 ### 정산 상태 관리: 스냅샷 영속화 + 이중 방어
 - 정산 확정은 조회 시점 즉석 계산과 분리해 **`settlement` 테이블에 스냅샷으로 영속화**합니다. 월별 정산 조회(`getMonthly`)와 스냅샷 생성(`create`)은 같은 private 계산 메서드(`calculateMonthly`)를 공유해 두 경로의 수치가 어긋나지 않습니다(공개 서비스 메서드 간 self-invocation은 `@Transactional` 프록시를 우회하므로 지양).

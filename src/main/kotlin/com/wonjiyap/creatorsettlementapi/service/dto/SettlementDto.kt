@@ -25,11 +25,11 @@ data class PeriodSettlementParam(
     val to: LocalDate,
 )
 
-/** 운영자 기간 집계 결과: 크리에이터별 정산 목록 + 전체 정산 합계. */
+/** 운영자 기간 집계 결과: 크리에이터별 정산 목록 + 전체 정산 합계. feeRate는 구간 내 율이 하나일 때만(아니면 null). */
 data class PeriodSettlementResult(
     val from: LocalDate,
     val to: LocalDate,
-    val feeRate: BigDecimal,
+    val feeRate: BigDecimal?,
     val totalSettlementAmount: Long,
     val creators: List<CreatorSettlement>,
 )

@@ -21,6 +21,8 @@ import com.wonjiyap.creatorsettlementapi.service.dto.SettlementCreateParam
 import com.wonjiyap.creatorsettlementapi.service.dto.SettlementListParam
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.math.BigDecimal
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.YearMonth
 import java.time.format.DateTimeParseException
@@ -43,44 +45,59 @@ class SettlementService(
     /**
      * 운영자용: 기간(from ~ to, KST) 내 크리에이터별 정산 목록과 전체 정산 합계.
      * 판매·환불이 하나라도 있는 크리에이터만 포함한다.
+     * 수수료율이 월 단위로 변할 수 있으므로 구간을 월별로 분해해 각 월의 율로 수수료를 계산·합산한다.
      */
     @Transactional(readOnly = true)
     fun getSummary(param: PeriodSettlementParam): PeriodSettlementResult {
         if (param.from.isAfter(param.to)) {
             throw CreatorException(ErrorCode.BAD_REQUEST, "시작일이 종료일보다 늦습니다: from ${param.from}, to ${param.to}")
         }
-        val periodParam = PeriodParam(
-            from = param.from.atStartOfDay(),
-            to = param.to.atTime(23, 59, 59),
-        )
 
-        val salesByCreator = saleRecordRepository.fetchAmountCountByCreator(periodParam).associateBy { it.creatorId }
-        val refundsByCreator =
-            cancelRecordRepository.fetchAmountCountByCreator(periodParam).associateBy { it.creatorId }
+        val segments = monthlySegments(param.from, param.to)
+        val rateByMonth = segments.associate { (yearMonth, _) -> yearMonth to feePolicy.rateFor(yearMonth) }
 
-        val creators = (salesByCreator.keys + refundsByCreator.keys).sorted().map { creatorId ->
-            val sales = salesByCreator[creatorId]
-            val refunds = refundsByCreator[creatorId]
-            val totalSales = sales?.total ?: 0
-            val totalRefund = refunds?.total ?: 0
-            val netSales = totalSales - totalRefund
-            val fee = feePolicy.calculateFee(netSales)
+        val totals = sortedMapOf<String, CreatorTotals>()
+        // 같은 율이 적용된 순매출끼리 묶어 수수료를 계산한다 → 율이 하나인 구간은 분해 전과 결과 동일
+        val netByCreatorAndRate = mutableMapOf<Pair<String, BigDecimal>, Long>()
+
+        for ((yearMonth, periodParam) in segments) {
+            val rate = rateByMonth.getValue(yearMonth)
+            val sales = saleRecordRepository.fetchAmountCountByCreator(periodParam).associateBy { it.creatorId }
+            val refunds = cancelRecordRepository.fetchAmountCountByCreator(periodParam).associateBy { it.creatorId }
+
+            for (creatorId in sales.keys + refunds.keys) {
+                val monthSales = sales[creatorId]?.total ?: 0
+                val monthRefund = refunds[creatorId]?.total ?: 0
+                val acc = totals.getOrPut(creatorId) { CreatorTotals() }
+                acc.totalSales += monthSales
+                acc.totalRefund += monthRefund
+                acc.saleCount += sales[creatorId]?.count ?: 0
+                acc.cancelCount += refunds[creatorId]?.count ?: 0
+                netByCreatorAndRate.merge(creatorId to rate, monthSales - monthRefund, Long::plus)
+            }
+        }
+
+        val creators = totals.map { (creatorId, acc) ->
+            val netSales = acc.totalSales - acc.totalRefund
+            val fee = netByCreatorAndRate.entries
+                .filter { it.key.first == creatorId }
+                .sumOf { (key, net) -> feePolicy.calculateFee(net, key.second) }
             CreatorSettlement(
                 creatorId = creatorId,
-                totalSales = totalSales,
-                totalRefund = totalRefund,
+                totalSales = acc.totalSales,
+                totalRefund = acc.totalRefund,
                 netSales = netSales,
                 fee = fee,
                 settlementAmount = netSales - fee,
-                saleCount = sales?.count ?: 0,
-                cancelCount = refunds?.count ?: 0,
+                saleCount = acc.saleCount,
+                cancelCount = acc.cancelCount,
             )
         }
 
         return PeriodSettlementResult(
             from = param.from,
             to = param.to,
-            feeRate = feePolicy.feeRate,
+            feeRate = rateByMonth.values.distinct().singleOrNull(),
             totalSettlementAmount = creators.sumOf { it.settlementAmount },
             creators = creators,
         )
@@ -160,7 +177,7 @@ class SettlementService(
     /**
      * 크리에이터의 월별 정산 계산 (getMonthly 조회와 create 스냅샷이 공유).
      * 판매는 결제 완료 일시(paidAt), 취소는 취소 일시(canceledAt) 기준 / KST.
-     * 월 경계: 해당 월 1일 00:00:00 ~ 말일 23:59:59.
+     * 월 경계: 해당 월 1일 00:00:00 ~ 말일 23:59:59. 수수료율은 해당 연월에 유효한 율.
      */
     private fun calculateMonthly(creatorId: String, yearMonth: YearMonth): MonthlySettlementResult {
         creatorRepository.fetchOne(CreatorFetchOneParam(id = creatorId))
@@ -176,7 +193,8 @@ class SettlementService(
         val refunds = cancelRecordRepository.fetchAmountCount(periodParam)
 
         val netSales = sales.total - refunds.total
-        val fee = feePolicy.calculateFee(netSales)
+        val feeRate = feePolicy.rateFor(yearMonth)
+        val fee = feePolicy.calculateFee(netSales, feeRate)
 
         return MonthlySettlementResult(
             creatorId = creatorId,
@@ -184,13 +202,38 @@ class SettlementService(
             totalSales = sales.total,
             totalRefund = refunds.total,
             netSales = netSales,
-            feeRate = feePolicy.feeRate,
+            feeRate = feeRate,
             fee = fee,
             settlementAmount = netSales - fee,
             saleCount = sales.count,
             cancelCount = refunds.count,
         )
     }
+
+    /** 구간을 월 단위 세그먼트로 분해한다 (부분 월 포함, 경계 시각은 기존 규칙 그대로). */
+    private fun monthlySegments(from: LocalDate, to: LocalDate): List<Pair<YearMonth, PeriodParam>> {
+        val segments = mutableListOf<Pair<YearMonth, PeriodParam>>()
+        var yearMonth = YearMonth.from(from)
+        val lastMonth = YearMonth.from(to)
+        while (yearMonth <= lastMonth) {
+            val segmentFrom = maxOf(from, yearMonth.atDay(1))
+            val segmentTo = minOf(to, yearMonth.atEndOfMonth())
+            segments += yearMonth to PeriodParam(
+                from = segmentFrom.atStartOfDay(),
+                to = segmentTo.atTime(23, 59, 59),
+            )
+            yearMonth = yearMonth.plusMonths(1)
+        }
+        return segments
+    }
+
+    /** getSummary의 크리에이터별 누적 집계용. */
+    private class CreatorTotals(
+        var totalSales: Long = 0,
+        var totalRefund: Long = 0,
+        var saleCount: Long = 0,
+        var cancelCount: Long = 0,
+    )
 
     private fun getOrThrow(id: String): Settlement =
         settlementRepository.fetchOne(
