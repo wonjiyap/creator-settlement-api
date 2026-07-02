@@ -132,4 +132,64 @@ class SettlementServiceTest(
             )
         }
     }
+
+    @Test
+    fun `추가 시나리오 - creator-4 2025-03 (한 판매 다수 부분취소 + 같은 날 취소)`() {
+        // sale-105에 부분취소 2건(cancel-103,104), sale-103과 cancel-102가 같은 날(3/18) — 모두 3월 집계에 반영
+        val result = settlementService.getMonthly(MonthlySettlementParam("creator-4", "2025-03"))
+
+        assertEquals(440000, result.totalSales)
+        assertEquals(160000, result.totalRefund) // 70,000 + 40,000 + 30,000 + 20,000
+        assertEquals(280000, result.netSales)
+        assertEquals(56000, result.fee)
+        assertEquals(224000, result.settlementAmount)
+        assertEquals(5, result.saleCount)
+        assertEquals(4, result.cancelCount)
+    }
+
+    @Test
+    fun `추가 시나리오 - creator-4 2025-04 (월 시작·끝 경계 시각 포함)`() {
+        // sale-106(04-01 00:00:00), sale-107(04-30 23:59:59) 둘 다 4월에 포함되어야 한다
+        val result = settlementService.getMonthly(MonthlySettlementParam("creator-4", "2025-04"))
+
+        assertEquals(160000, result.totalSales)
+        assertEquals(2, result.saleCount)
+        assertEquals(0, result.totalRefund)
+        assertEquals(128000, result.settlementAmount)
+    }
+
+    @Test
+    fun `추가 시나리오 - creator-4 2025-05 (크로스먼스 전액환불 → 순매출 음수)`() {
+        // cancel-105(5/1)는 4월 판매 sale-106의 환불 → 5월엔 판매 0, 환불 70,000
+        val result = settlementService.getMonthly(MonthlySettlementParam("creator-4", "2025-05"))
+
+        assertEquals(0, result.totalSales)
+        assertEquals(70000, result.totalRefund)
+        assertEquals(-70000, result.netSales)
+        assertEquals(-14000, result.fee)
+        assertEquals(-56000, result.settlementAmount)
+    }
+
+    @Test
+    fun `추가 시나리오 - creator-5 2025-05 (동월 전액환불 반영)`() {
+        // sale-109(150,000)가 같은 달 cancel-106(150,000)으로 전액환불 → 환불에 그대로 반영(sale-108은 유지)
+        val result = settlementService.getMonthly(MonthlySettlementParam("creator-5", "2025-05"))
+
+        assertEquals(300000, result.totalSales)
+        assertEquals(150000, result.totalRefund)
+        assertEquals(150000, result.netSales)
+        assertEquals(120000, result.settlementAmount)
+        assertEquals(2, result.saleCount)
+        assertEquals(1, result.cancelCount)
+    }
+
+    @Test
+    fun `추가 시나리오 - creator-5 2025-06 (재구매는 다음 달에 독립 집계)`() {
+        // student-15가 5월(sale-108)에 이어 6월(sale-110)에 course-9 재구매 → 6월에 독립 집계
+        val result = settlementService.getMonthly(MonthlySettlementParam("creator-5", "2025-06"))
+
+        assertEquals(150000, result.totalSales)
+        assertEquals(1, result.saleCount)
+        assertEquals(120000, result.settlementAmount)
+    }
 }
