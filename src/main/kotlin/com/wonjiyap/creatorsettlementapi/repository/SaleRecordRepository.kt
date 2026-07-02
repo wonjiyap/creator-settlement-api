@@ -6,7 +6,9 @@ import com.wonjiyap.creatorsettlementapi.domain.QCourse.course
 import com.wonjiyap.creatorsettlementapi.domain.QSaleRecord.saleRecord
 import com.wonjiyap.creatorsettlementapi.domain.SaleRecord
 import com.wonjiyap.creatorsettlementapi.repository.dto.AmountCount
+import com.wonjiyap.creatorsettlementapi.repository.dto.CreatorAmountCount
 import com.wonjiyap.creatorsettlementapi.repository.dto.CreatorPeriodParam
+import com.wonjiyap.creatorsettlementapi.repository.dto.PeriodParam
 import com.wonjiyap.creatorsettlementapi.repository.dto.SaleRecordFetchOneParam
 import org.springframework.data.jpa.repository.JpaRepository
 
@@ -17,6 +19,9 @@ interface SaleRecordCustomRepository {
 
     /** 크리에이터의 기간 내 판매 금액 합계 + 건수 (paidAt 기준). */
     fun fetchAmountCount(param: CreatorPeriodParam): AmountCount
+
+    /** 기간 내 크리에이터별 판매 금액 합계 + 건수 (paidAt 기준). */
+    fun fetchAmountCountByCreator(param: PeriodParam): List<CreatorAmountCount>
 }
 
 class SaleRecordCustomRepositoryImpl(
@@ -49,4 +54,23 @@ class SaleRecordCustomRepositoryImpl(
                 saleRecord.paidAt.loe(param.to),
             )
             .fetchOne()!!
+
+    override fun fetchAmountCountByCreator(param: PeriodParam): List<CreatorAmountCount> =
+        queryFactory
+            .select(
+                Projections.constructor(
+                    CreatorAmountCount::class.java,
+                    course.creatorId,
+                    saleRecord.amount.sum().coalesce(0L),
+                    saleRecord.count(),
+                ),
+            )
+            .from(saleRecord)
+            .join(course).on(saleRecord.courseId.eq(course.id))
+            .where(
+                saleRecord.paidAt.goe(param.from),
+                saleRecord.paidAt.loe(param.to),
+            )
+            .groupBy(course.creatorId)
+            .fetch()
 }
