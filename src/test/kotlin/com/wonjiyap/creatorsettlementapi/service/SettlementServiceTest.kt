@@ -2,11 +2,13 @@ package com.wonjiyap.creatorsettlementapi.service
 
 import com.wonjiyap.creatorsettlementapi.exception.CreatorException
 import com.wonjiyap.creatorsettlementapi.service.dto.MonthlySettlementParam
+import com.wonjiyap.creatorsettlementapi.service.dto.PeriodSettlementParam
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.transaction.annotation.Transactional
+import java.time.LocalDate
 import kotlin.test.assertEquals
 
 @SpringBootTest
@@ -85,6 +87,49 @@ class SettlementServiceTest(
     fun `잘못된 연월 형식이면 예외가 발생한다`() {
         assertThrows(CreatorException::class.java) {
             settlementService.getMonthly(MonthlySettlementParam("creator-1", "2025-13"))
+        }
+    }
+
+    @Test
+    fun `존재하지 않는 크리에이터면 예외가 발생한다`() {
+        assertThrows(CreatorException::class.java) {
+            settlementService.getMonthly(MonthlySettlementParam("creator-없음", "2025-03"))
+        }
+    }
+
+    @Test
+    fun `기간 집계 - 2025-03 전체 크리에이터 정산`() {
+        // 2025-03 활동: creator-1(정산 120,000), creator-2(60,000 판매 → 정산 48,000),
+        //               creator-4(순 280,000 → 정산 224,000). creator-3/5는 3월 활동 없음.
+        val result = settlementService.getSummary(
+            PeriodSettlementParam(LocalDate.of(2025, 3, 1), LocalDate.of(2025, 3, 31)),
+        )
+
+        assertEquals(3, result.creators.size)
+        assertEquals(392000, result.totalSettlementAmount) // 120,000 + 48,000 + 224,000
+        assertEquals(120000, result.creators.first { it.creatorId == "creator-1" }.settlementAmount)
+    }
+
+    @Test
+    fun `기간 집계 - 월을 가로지르는 자유 구간`() {
+        // 2025-02-01 ~ 2025-03-31 (2월+3월). 2월엔 creator-3 sale-7(2/14, 120,000), creator-2 cancel-3(2/2, 60,000)이 포함된다.
+        //  creator-1: 120,000 / creator-2: 순 0(판매 60,000 - 환불 60,000) → 0 / creator-3: 순 120,000 → 96,000 / creator-4: 224,000
+        val result = settlementService.getSummary(
+            PeriodSettlementParam(LocalDate.of(2025, 2, 1), LocalDate.of(2025, 3, 31)),
+        )
+
+        assertEquals(4, result.creators.size)
+        assertEquals(440000, result.totalSettlementAmount) // 120,000 + 0 + 96,000 + 224,000
+        assertEquals(0, result.creators.first { it.creatorId == "creator-2" }.settlementAmount)
+        assertEquals(96000, result.creators.first { it.creatorId == "creator-3" }.settlementAmount)
+    }
+
+    @Test
+    fun `기간 집계 - 시작일이 종료일보다 늦으면 예외가 발생한다`() {
+        assertThrows(CreatorException::class.java) {
+            settlementService.getSummary(
+                PeriodSettlementParam(LocalDate.of(2025, 3, 31), LocalDate.of(2025, 3, 1)),
+            )
         }
     }
 }

@@ -4,6 +4,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
@@ -22,6 +23,17 @@ class GlobalExceptionHandler {
                 ErrorResponse(
                     code = ErrorCode.BAD_REQUEST.code,
                     message = e.bindingResult.fieldErrors.joinToString { "${it.field}: ${it.defaultMessage}" },
+                ),
+            )
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException::class)
+    fun handleTypeMismatch(e: MethodArgumentTypeMismatchException): ResponseEntity<ErrorResponse> =
+        ResponseEntity
+            .status(ErrorCode.BAD_REQUEST.code)
+            .body(
+                ErrorResponse(
+                    code = ErrorCode.BAD_REQUEST.code,
+                    message = "요청 파라미터 형식이 올바르지 않습니다: ${e.name}",
                 ),
             )
 }

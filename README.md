@@ -130,9 +130,41 @@ GET /api/settlement/monthly?creator_id=creator-1&month=2025-03
 ```
 
 - `net_sales = total_sales − total_refund`, `fee = net_sales × fee_rate`(반올림), `settlement_amount = net_sales − fee`
-- 판매가 없는 월은 모두 `0`으로 응답한다(빈 월).
+- **존재하는** 크리에이터인데 해당 월 판매가 없으면 모두 `0`으로 응답한다(빈 월).
 - 특정 월에 취소만 있거나 취소액이 판매액보다 크면 `net_sales`·`settlement_amount`가 **음수**가 될 수 있다(공식을 일관 적용).
-- 잘못된 연월 형식 → `400 { "code": 400, "message": "잘못된 연월 형식입니다: ..." }`
+
+| 상황 | 상태 | 본문 예시 |
+|------|------|-----------|
+| 잘못된 연월 형식 | `400` | `{ "code": 400, "message": "잘못된 연월 형식입니다: ..." }` |
+| 존재하지 않는 크리에이터 | `404` | `{ "code": 404, "message": "존재하지 않는 크리에이터입니다: creator-없음" }` |
+
+### 운영자용 기간 정산 집계 — `GET /api/settlement/summary`
+쿼리 파라미터 `from`, `to`(`YYYY-MM-DD`, 경계 포함/KST) 기간의 **크리에이터별 정산 목록 + 전체 정산 합계**. 해당 기간에 판매·환불이 하나라도 있는 크리에이터만 포함한다.
+
+> **기간은 자유롭게 지정할 수 있다.** 월 단위(`2025-03-01 ~ 2025-03-31`)뿐 아니라 월을 가로지르거나 부분 월인 임의 구간(예: `2025-02-15 ~ 2025-03-31`)도 그대로 집계된다. 딱 떨어지는 한 달 정산은 `GET /api/settlement/monthly`, 임의 구간 집계는 이 엔드포인트로 역할을 나눴다.
+
+요청
+```http
+GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
+```
+
+응답 `200 OK`
+```json
+{
+  "from": "2025-03-01",
+  "to": "2025-03-31",
+  "fee_rate": 0.20,
+  "total_settlement_amount": 392000,
+  "creators": [
+    { "creator_id": "creator-1", "total_sales": 260000, "total_refund": 110000, "net_sales": 150000, "fee": 30000, "settlement_amount": 120000, "sale_count": 4, "cancel_count": 2 },
+    { "creator_id": "creator-2", "total_sales": 60000,  "total_refund": 0,      "net_sales": 60000,  "fee": 12000, "settlement_amount": 48000,  "sale_count": 1, "cancel_count": 0 },
+    { "creator_id": "creator-4", "total_sales": 440000, "total_refund": 160000, "net_sales": 280000, "fee": 56000, "settlement_amount": 224000, "sale_count": 5, "cancel_count": 4 }
+  ]
+}
+```
+
+- `total_settlement_amount`는 목록의 `settlement_amount` 합계.
+- `from > to` → `400`, 날짜 형식 오류 → `400`.
 
 ## 데이터 모델 설명
 연관관계 매핑 없이 각 엔티티는 참조 대상을 **ID 값**으로만 보유한다. (스키마는 Flyway `V1__init.sql`이 소유)
@@ -168,6 +200,11 @@ GET /api/settlement/monthly?creator_id=creator-1&month=2025-03
 
 ## 요구사항 해석 및 가정
 - 모든 시각은 **KST 기준**으로 저장·해석한다. DB 컬럼은 타임존 없는 `TIMESTAMP`(엔티티 `LocalDateTime`)를 사용하고, 입력에 포함된 `+09:00` 오프셋은 KST 벽시계 값으로 취급한다.
+- **인증/인가는 범위 외**로 둔다. 과제가 "userId를 헤더/파라미터로 전달" 방식을 허용하므로 크리에이터 식별은 API 파라미터(`creator_id`)로 처리하고, 운영자 집계 API도 역할 검증 없이 노출한다.
+- **월별 정산과 기간 집계의 기간 정의를 분리**했다. 월별(`/monthly`)은 `YYYY-MM`으로 해당 월 1일~말일, 기간 집계(`/summary`)는 `from`~`to`의 임의 구간.
+- **수수료**는 순 판매액 × 수수료율(기본 20%)이며 원 단위로 **반올림**(HALF_UP)한다.
+- 특정 기간에 환불이 판매를 초과하면 순 판매·정산액이 **음수**가 될 수 있으며, 공식(`정산 = 순 판매 − 수수료`)을 음수에도 일관 적용한다.
+- 월별 정산 조회 시 **존재하지 않는 크리에이터는 `404`**, **존재하지만 해당 월 판매가 없으면 `0`(빈 월)**으로 구분해 응답한다.
 
 ## 설계 결정과 이유
 
@@ -175,6 +212,10 @@ GET /api/settlement/monthly?creator_id=creator-1&month=2025-03
 - `@OneToMany`, `@ManyToOne` 등 JPA 연관관계 매핑을 사용하지 않고, 엔티티 간 관계는 **FK ID 값만 보유**합니다.
 - N+1 문제, 묵시적 JOIN, Lazy/Eager 로딩 이슈 등을 구조적으로 차단하고 실행 쿼리를 예측 가능하게 유지하기 위함입니다.
 - 연관 데이터가 필요한 경우 **Repository를 통해 명시적으로 조회**합니다.
+
+### 조회는 QueryDSL 커스텀 리포지토리로만
+- `JpaRepository`는 쓰기(`save` 등) 위주로 쓰고, **모든 조회는 커스텀 프래그먼트**(`XxxCustomRepository` + `XxxCustomRepositoryImpl`, `JPAQueryFactory` 주입)에서 QueryDSL로 작성합니다. 조회 파라미터는 `repository/dto`에 정의합니다.
+- 연관관계가 없으므로 집계 시 조인을 `join(...).on(a.xxxId.eq(b.id))`로 명시합니다(예: 판매→강의, 취소→판매→강의). 타입 안전하고 실행 쿼리가 예측 가능합니다.
 
 ### 수수료율을 정책 객체로 분리
 수수료율은 현재 고정 20%지만, 값을 코드에 하드코딩하지 않고 설정(`settlement.fee-rate`)으로 분리하고 계산을 `FeePolicy` 컴포넌트에 위임합니다. 수수료율 변경 시 설정만 바꾸면 되고, 추후 "수수료율 변경 이력(과거 정산은 당시 율 적용)"으로 확장할 지점이 명확합니다.
@@ -191,6 +232,8 @@ GET /api/settlement/monthly?creator_id=creator-1&month=2025-03
 - 테스트는 `@SpringBootTest` + 인메모리 H2로 실제 스택(Flyway 시드 포함)에서 동작하며, `@Transactional`로 각 테스트 후 롤백되어 데이터가 오염되지 않는다.
 
 ## 미구현 / 제약사항
+- **인증/인가**: 구현하지 않음(범위 외). `creator_id`를 신뢰하고 처리한다.
+- **DB는 인메모리 H2**: 애플리케이션 종료 시 데이터가 초기화되며, 매 기동 시 Flyway 시드로 동일 데이터가 재적재된다. 운영 DB(MySQL 등) 연동은 범위 외.
 
 ## AI 활용 범위
 - 이 프로젝트는 Claude Code(AI 페어 프로그래밍)를 활용해 진행했다.
