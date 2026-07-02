@@ -425,4 +425,70 @@ class SettlementServiceTest(
         }
         assertEquals(ErrorCode.CONFLICT, e.errorCode)
     }
+
+    // ---- 수수료율 변경 이력 (V6 시드: 2024-01부터 20%, 2025-07부터 15%) ----
+
+    @Test
+    fun `수수료율 이력 - 2025-07 정산은 인하된 15%가 적용된다`() {
+        // 시드에 2025-07 판매가 없으므로 테스트에서 등록
+        saleRecordService.register(
+            SaleRecordCreateParam(
+                courseId = "course-1",
+                studentId = "student-99",
+                amount = 100000,
+                paidAt = LocalDateTime.of(2025, 7, 10, 10, 0, 0),
+            ),
+        )
+
+        val result = settlementService.getMonthly(MonthlySettlementParam("creator-1", "2025-07"))
+
+        assertEquals(0, BigDecimal("0.15").compareTo(result.feeRate))
+        assertEquals(100000, result.totalSales)
+        assertEquals(15000, result.fee)
+        assertEquals(85000, result.settlementAmount)
+    }
+
+    @Test
+    fun `수수료율 이력 - 스냅샷은 대상 월에 유효했던 율을 저장한다`() {
+        // creator-3 2025-07 빈 월 스냅샷 → 금액 0이어도 당시 율 15%가 기록된다
+        val settlement = settlementService.create(SettlementCreateParam("creator-3", "2025-07"))
+
+        assertEquals(0, BigDecimal("0.15").compareTo(settlement.feeRate))
+        assertEquals(0, settlement.settlementAmount)
+    }
+
+    @Test
+    fun `수수료율 이력 - 율 변경을 가로지르는 기간 집계는 월별 율로 계산된다`() {
+        // creator-4: 6월(20%) 순 185,000 + 7월(15%) 순 100,000
+        saleRecordService.register(
+            SaleRecordCreateParam(
+                courseId = "course-7",
+                studentId = "student-98",
+                amount = 100000,
+                paidAt = LocalDateTime.of(2025, 7, 10, 10, 0, 0),
+            ),
+        )
+
+        val result = settlementService.getSummary(
+            PeriodSettlementParam(LocalDate.of(2025, 6, 1), LocalDate.of(2025, 7, 31)),
+        )
+
+        assertNull(result.feeRate) // 구간 내 율이 20%·15% 둘 → 단일 율 아님
+        val creator4 = result.creators.first { it.creatorId == "creator-4" }
+        assertEquals(420000, creator4.totalSales)   // 320,000(6월) + 100,000(7월)
+        assertEquals(135000, creator4.totalRefund)
+        assertEquals(285000, creator4.netSales)
+        assertEquals(52000, creator4.fee)           // 185,000×20% + 100,000×15% = 37,000 + 15,000
+        assertEquals(233000, creator4.settlementAmount)
+    }
+
+    @Test
+    fun `수수료율 이력 - 단일 율 구간의 기간 집계는 fee_rate가 채워진다`() {
+        val result = settlementService.getSummary(
+            PeriodSettlementParam(LocalDate.of(2025, 3, 1), LocalDate.of(2025, 3, 31)),
+        )
+
+        assertNotNull(result.feeRate)
+        assertEquals(0, BigDecimal("0.20").compareTo(result.feeRate!!))
+    }
 }

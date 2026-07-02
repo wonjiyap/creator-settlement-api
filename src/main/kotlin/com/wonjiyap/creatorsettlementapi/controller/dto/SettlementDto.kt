@@ -42,7 +42,8 @@ data class SettlementResponse(
 data class SettlementSummaryResponse(
     val from: LocalDate,
     val to: LocalDate,
-    val feeRate: BigDecimal,
+    /** 구간 내 적용 수수료율이 하나일 때만 값, 여러 율이 섞이면 null (크리에이터별 fee는 월별 율로 계산됨). */
+    val feeRate: BigDecimal?,
     val totalSettlementAmount: Long,
     val creators: List<CreatorSettlementResponse>,
 ) {

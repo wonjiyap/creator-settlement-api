@@ -30,7 +30,8 @@
 - JPA 엔티티를 위해 `kotlin("plugin.jpa")` + `allOpen`이 `@Entity`/`@MappedSuperclass`/`@Embeddable`에 적용되어 있다(엔티티 클래스를 `open`으로 선언할 필요 없음).
 
 ### 스키마 / DB
-- **스키마는 Flyway가 소유한다.** 마이그레이션 위치: `src/main/resources/db/migration/`(`V1__init.sql` 스키마, `V2__seed_sample_data.sql` 샘플 데이터, `V3__create_settlement.sql` 정산 스냅샷 테이블, `V4__seed_settlement_data.sql` 정산 시드). 테이블 변경은 새 `V{n}__*.sql`을 추가하는 방식으로 한다(기존 파일 수정은 지양 — 단, 인메모리라 매 부팅 이력이 초기화되어 개발 중엔 수정해도 무방).
+- **스키마는 Flyway가 소유한다.** 마이그레이션 위치: `src/main/resources/db/migration/`(`V1__init.sql` 스키마, `V2__seed_sample_data.sql` 샘플 데이터, `V3__create_settlement.sql` 정산 스냅샷 테이블, `V4__seed_settlement_data.sql` 정산 시드, `V5__create_fee_rate_history.sql` 수수료율 이력 테이블, `V6__seed_fee_rate_history.sql` 수수료율 시드). 테이블 변경은 새 `V{n}__*.sql`을 추가하는 방식으로 한다(기존 파일 수정은 지양 — 단, 인메모리라 매 부팅 이력이 초기화되어 개발 중엔 수정해도 무방).
+- **수수료율 시드(V6) 주의**: 기존 검증 시나리오 구간(2024-11 ~ 2025-06)은 전부 20% 전제 — 이 구간의 율을 바꾸지 말 것. 데모 변경(15%)은 샘플 판매가 없는 2025-07부터.
 - **정산 시드(V4) 주의**: 동일 크리에이터+월 중복 정산이 409로 막히므로, 테스트가 `create()` 하는 크리에이터/월(creator-1 2025-03, creator-2 2025-01, creator-3 2025-03, creator-4 2025-05·06, creator-5 2025-06)은 **시드에 넣지 말 것**. 시드 금액은 V2 데이터 계산값과 일치해야 한다(`SettlementServiceTest`의 시드 검증 테스트가 감시).
 - **H2에서 `MONTH`는 예약어**라 컬럼명으로 쓰지 않는다 — 정산 대상 연월 컬럼은 `period`(`VARCHAR(7)`, `"YYYY-MM"`), API JSON에서만 `month`로 노출.
 - enum 영속 컬럼은 `@Enumerated(EnumType.STRING)` + `VARCHAR`로 저장한다(예: `settlement.status`).
@@ -46,7 +47,7 @@
 
 정산 계산 로직의 정확성이 이 과제의 핵심이다. 아래 규칙을 코드/테스트에서 반드시 지킬 것.
 
-- **수수료율: 고정 20%.** 단, 변경 가능하도록 설계할 것(상수 하드코딩 지양, 추후 수수료율 이력 관리로 확장 여지). 정산 예정 금액 = 순 판매 − 수수료.
+- **수수료율: 월 단위 변경 이력으로 관리(구현됨).** `fee_rate_history`의 "effectiveMonth부터 적용" 이력에서 `FeePolicy.rateFor(연월)`이 해당 월의 율을 찾는다(이력 없는 구간은 설정 `settlement.fee-rate` 기본 20%, scale 4 정규화 반환). **소급 등록 불가**(다음 달 이후만 — 과거 정산 불변 보장). 기간 집계(summary)는 월별 분해 후 각 월의 율로 수수료 합산, 구간 내 율이 하나가 아니면 응답 `fee_rate`는 null. 정산 예정 금액 = 순 판매 − 수수료.
 - **순 판매 = 총 판매 − 환불.** 부분 환불(환불액 < 원결제액)을 반드시 지원.
 - **정산 기간 기준**: 판매는 결제 완료 일시(`paidAt`), 취소는 취소 일시 기준. **KST**. 월 경계는 해당 월 1일 `00:00:00` ~ 말일 `23:59:59`. → 1월 말 결제 / 2월 초 취소는 각각 다른 월 정산에 반영된다(월 경계 케이스).
 - 빈 월 조회(판매 없음)는 0원으로 일관되게 응답.
@@ -54,7 +55,7 @@
 
 ### API 범위
 - 필수: ① 판매/취소 내역 등록 및 크리에이터별·기간 필터 조회, ② 크리에이터별 월별 정산 계산(요청: 크리에이터 ID + 연월 `YYYY-MM`; 응답: 총 판매/환불/순 판매/수수료/정산 예정 금액 + 판매·취소 건수), ③ 운영자용 기간 집계(시작일~종료일 → 크리에이터별 정산 예정 금액 목록 + 전체 합계).
-- 선택(가산점): 정산 상태 관리(PENDING→CONFIRMED→PAID) ✅ 구현, 동일 기간 중복 정산 방지 ✅ 구현, CSV/엑셀 다운로드, 수수료율 변경 이력(과거 정산은 당시 수수료율 적용).
+- 선택(가산점): 정산 상태 관리(PENDING→CONFIRMED→PAID) ✅ 구현, 동일 기간 중복 정산 방지 ✅ 구현, 수수료율 변경 이력(과거 정산은 당시 수수료율 적용) ✅ 구현, CSV/엑셀 다운로드.
 
 실제 결제 시스템 연동은 불필요 — 데이터는 API 또는 직접 삽입으로 등록한다.
 
@@ -63,7 +64,7 @@
 루트 패키지는 `com.wonjiyap.creatorsettlementapi`. **계층별 패키지 + DTO는 계층 하위에 중첩**한다:
 
 ```
-domain/            # 엔티티 (Creator, Course, SaleRecord, CancelRecord, Settlement)
+domain/            # 엔티티 (Creator, Course, SaleRecord, CancelRecord, Settlement, FeeRateHistory)
 repository/        # Spring Data JPA 리포지토리
   dto/             # 조회 프로젝션 DTO (집계/조인 결과)
 service/           # 비즈니스 로직 (필요 시 service 계산 결과 모델)
