@@ -22,6 +22,10 @@ class CourseCustomRepositoryImpl(
         queryFactory
             .selectFrom(course)
             .where(
+                param.idArr?.let {
+                    if (it.isEmpty()) return listOf()
+                    course.id.`in`(it)
+                },
                 param.creatorId?.let { course.creatorId.eq(it) },
                 param.title?.let { course.title.containsIgnoreCase(it) },
             )
