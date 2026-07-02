@@ -17,6 +17,9 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
 
+settlement:
+  fee-rate: 0.20
+
 springdoc:
   swagger-ui:
     path: /api-docs
