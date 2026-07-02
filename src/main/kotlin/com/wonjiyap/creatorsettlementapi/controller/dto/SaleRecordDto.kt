@@ -9,6 +9,9 @@ import java.time.LocalDateTime
 data class SaleRecordResponse(
     val id: String,
     val courseId: String,
+    val courseTitle: String?,
+    val creatorId: String?,
+    val creatorName: String?,
     val studentId: String,
     val amount: Long,
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
@@ -18,6 +21,9 @@ data class SaleRecordResponse(
         fun from(sale: SaleRecord) = SaleRecordResponse(
             id = sale.id,
             courseId = sale.courseId,
+            courseTitle = sale.course?.title,
+            creatorId = sale.course?.creator?.id,
+            creatorName = sale.course?.creator?.name,
             studentId = sale.studentId,
             amount = sale.amount,
             paidAt = sale.paidAt,

@@ -74,6 +74,26 @@ Content-Type: application/json
 | 유효성 위반(`amount ≤ 0`, `course_id`/`student_id` 공백) | `400` | `{ "code": 400, "message": "amount: ..." }` |
 | 존재하지 않는 강의 | `404` | `{ "code": 404, "message": "존재하지 않는 강의입니다: course-없음" }` |
 
+### 판매 내역 목록 조회 — `GET /api/sale-record/list`
+판매 목록을 조회한다. `creator_id`·기간(`from`/`to`, `YYYY-MM-DD`, `paid_at` 기준/KST)은 **모두 선택**이며 각각 독립 적용된다(생략 시 해당 조건 없이 전체). `paid_at` 오름차순 정렬. 응답에는 연관된 강의명·크리에이터 정보를 함께 담는다.
+
+요청
+```http
+GET /api/sale-record/list?creator_id=creator-1&from=2025-03-01&to=2025-03-31
+```
+
+응답 `200 OK`
+```json
+[
+  { "id": "sale-1", "course_id": "course-1", "course_title": "Spring Boot 입문", "creator_id": "creator-1", "creator_name": "김강사", "student_id": "student-1", "amount": 50000, "paid_at": "2025-03-05 10:00:00" },
+  { "id": "sale-2", "course_id": "course-1", "course_title": "Spring Boot 입문", "creator_id": "creator-1", "creator_name": "김강사", "student_id": "student-2", "amount": 50000, "paid_at": "2025-03-15 14:30:00" }
+]
+```
+
+- `course_title`/`creator_id`/`creator_name`은 참조 ID로 강의·크리에이터를 한 번씩 조회해 in-memory로 채운다(N+1 없음).
+- 조건을 모두 생략하면 전체 판매를 반환한다.
+- `from > to` → `400`, 날짜 형식 오류 → `400`, `creator_id`가 존재하지 않으면 → `404`.
+
 ### 취소(환불) 내역 등록 — `POST /api/cancel-record`
 `sale_record_id`는 존재하는 판매여야 하고, `refund_amount`는 0보다 커야 한다. **누적 환불액(기존 + 이번)이 원결제 금액을 넘을 수 없다**(부분 환불 지원). 서버가 `id`를 생성한다.
 
@@ -217,6 +237,9 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 - `JpaRepository`는 쓰기(`save` 등) 위주로 쓰고, **모든 조회는 커스텀 프래그먼트**(`XxxCustomRepository` + `XxxCustomRepositoryImpl`, `JPAQueryFactory` 주입)에서 QueryDSL로 작성합니다. 조회 파라미터는 `repository/dto`에 정의합니다.
 - 연관관계가 없으므로 집계 시 조인을 `join(...).on(a.xxxId.eq(b.id))`로 명시합니다(예: 판매→강의, 취소→판매→강의). 타입 안전하고 실행 쿼리가 예측 가능합니다.
 
+### 연관 데이터는 in-memory로 조립 (N+1 방지)
+응답에 연관 엔티티 정보(강의명, 크리에이터명 등)가 필요할 때, JPA 연관관계 대신 **참조 ID를 모아 한 번에 조회**한 뒤 `@Transient` 필드에 in-memory로 매핑합니다: `List<SaleRecord>.fromCourses(...)` → 그 안에서 `List<Course>.fromCreators(...)`. 목록 크기와 무관하게 **course 1회·creator 1회** 조회로 끝나 N+1이 발생하지 않고, 결합 시점과 대상을 코드에서 명시적으로 통제합니다. (판매 목록 조회 응답의 `course_title`/`creator_id`/`creator_name`이 이 방식으로 채워집니다.)
+
 ### 수수료율을 정책 객체로 분리
 수수료율은 현재 고정 20%지만, 값을 코드에 하드코딩하지 않고 설정(`settlement.fee-rate`)으로 분리하고 계산을 `FeePolicy` 컴포넌트에 위임합니다. 수수료율 변경 시 설정만 바꾸면 되고, 추후 "수수료율 변경 이력(과거 정산은 당시 율 적용)"으로 확장할 지점이 명확합니다.
 
@@ -242,7 +265,7 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
 ### AI(Claude)가 한 것
 - 초기 환경 설정: `.gitignore` 작성, 의존성 설정 및 기본 세팅
 - 작업 단위를 **GitHub 이슈로 분해·생성**
-- 구현/테스트 코드 작성: Flyway 스키마·시드 데이터, 엔티티·리포지토리, QueryDSL 세팅, 판매/취소 등록 API, 월별 정산 계산 API, 서비스 테스트
+- 구현/테스트 코드 작성: Flyway 스키마·시드 데이터, 엔티티·리포지토리, QueryDSL 세팅, 판매 등록/목록 조회·취소 등록 API, 월별 정산 계산·운영자 기간 집계 API, 전역 예외 핸들러(`@RestControllerAdvice`), 서비스 테스트
 - 실제 빌드·테스트·데이터 집계로 **검증**(예: 명세 시나리오 수치 대조)
 - `README.md` / `CLAUDE.md` 문서화
 
@@ -253,6 +276,7 @@ GET /api/settlement/summary?from=2025-03-01&to=2025-03-31
   - 패키지 구조(계층별 + DTO 계층 하위 중첩), 요청/응답 **snake_case 전역**
   - 예외 설계(`ErrorCode` enum + 단일 `CreatorException`)와 전역 핸들러 방식
   - 커스텀 리포지토리 패턴(`fetch`/`fetchOne` + 파라미터 DTO), 조회는 QueryDSL로만
+  - 응답용 연관 데이터(course/creator) 조립을 in-memory 배치 방식(`@Transient` + `fromCourses`/`fromCreators` 확장함수)으로 직접 설계·구현
   - 테스트 전략(컨트롤러 테스트는 생략, 서비스/시나리오 테스트 중심)
 - 직접 코드 리팩터링·네이밍 정리(`SaleRecord*` 계열 등), AI 산출물 리뷰 및 수정 지시
 - 최종 의사결정 및 **모든 커밋 수행**

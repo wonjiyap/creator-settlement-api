@@ -1,6 +1,7 @@
 package com.wonjiyap.creatorsettlementapi.repository.dto
 
 data class CourseFetchParam(
+    val idArr: List<String>? = null,
     val creatorId: String? = null,
     val title: String? = null,
 )
