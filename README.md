@@ -46,6 +46,7 @@
 ### 판매 내역 등록 — `POST /api/sale-record`
 요청 본문의 `course_id`는 존재하는 강의여야 하며, `amount`는 0보다 커야 한다. 서버가 `id`를 생성한다.
 요청·응답 본문 모두 **snake_case**다(Jackson 전역 설정).
+`paid_at`은 **`yyyy-MM-dd HH:mm:ss`(KST) 형식만 허용**한다 — ISO-8601(`2025-03-05T10:00:00+09:00`) 등 다른 형식은 `400`.
 
 요청
 ```http
@@ -76,6 +77,7 @@ Content-Type: application/json
 | 상황 | 상태 | 본문 예시 |
 |------|------|-----------|
 | 유효성 위반(`amount ≤ 0`, `course_id`/`student_id` 공백) | `400` | `{ "code": 400, "message": "amount: ..." }` |
+| `paid_at` 형식 오류(`yyyy-MM-dd HH:mm:ss`가 아님) | `400` | `{ "code": 400, "message": "요청 본문을 읽을 수 없습니다. 형식을 확인해 주세요." }` |
 | 존재하지 않는 강의 | `404` | `{ "code": 404, "message": "존재하지 않는 강의입니다: course-없음" }` |
 
 ### 판매 내역 목록 조회 — `GET /api/sale-record/list`
@@ -100,6 +102,7 @@ GET /api/sale-record/list?creator_id=creator-1&from=2025-03-01&to=2025-03-31
 
 ### 취소(환불) 내역 등록 — `POST /api/cancel-record`
 `sale_record_id`는 존재하는 판매여야 하고, `refund_amount`는 0보다 커야 한다. **누적 환불액(기존 + 이번)이 원결제 금액을 넘을 수 없다**(부분 환불 지원). 서버가 `id`를 생성한다.
+`canceled_at`은 `paid_at`과 동일하게 **`yyyy-MM-dd HH:mm:ss`(KST) 형식만 허용**한다(다른 형식은 `400`).
 
 요청
 ```http
@@ -430,7 +433,7 @@ GET /api/fee-rate/list
 | 추가 | 다건 판매 볼륨 월 | creator-4 2025-06: sale-122~125 / cancel-110,111 | 판매 4건 320,000 · 환불 135,000 → 순 185,000 · 수수료 37,000 · 정산 148,000 | `SettlementServiceTest` › `다건 볼륨 - creator-4 2025-06` |
 
 ## 요구사항 해석 및 가정
-- 모든 시각은 **KST 기준**으로 저장·해석한다. DB 컬럼은 타임존 없는 `TIMESTAMP`(엔티티 `LocalDateTime`)를 사용하고, 입력에 포함된 `+09:00` 오프셋은 KST 벽시계 값으로 취급한다.
+- 모든 시각은 **KST 기준**으로 저장·해석한다. DB 컬럼은 타임존 없는 `TIMESTAMP`(엔티티 `LocalDateTime`)를 사용한다. **타임존은 별도로 고려하지 않으며**, API의 시각 입출력은 **`yyyy-MM-dd HH:mm:ss` 단일 형식**으로 통일하고 그 값을 KST 벽시계로 해석한다. 타임존/오프셋이 붙은 ISO-8601 형식(`2025-03-05T10:00:00+09:00` 등)은 지원하지 않는다(`400`).
 - **인증/인가는 범위 외**로 둔다. 과제가 "userId를 헤더/파라미터로 전달" 방식을 허용하므로 크리에이터 식별은 API 파라미터(`creator_id`)로 처리하고, 운영자 집계 API도 역할 검증 없이 노출한다.
 - **월별 정산과 기간 집계의 기간 정의를 분리**했다. 월별(`/monthly`)은 `YYYY-MM`으로 해당 월 1일~말일, 기간 집계(`/summary`)는 `from`~`to`의 임의 구간.
 - **수수료**는 순 판매액 × 수수료율(기본 20%)이며 원 단위로 **반올림**(HALF_UP)한다.

@@ -429,7 +429,7 @@ class SettlementServiceTest(
     // ---- 수수료율 변경 이력 (V6 시드: 2024-01부터 20%, 2025-07부터 15%) ----
 
     @Test
-    fun `수수료율 이력 - 2025-07 정산은 인하된 15%가 적용된다`() {
+    fun `수수료율 이력 - 2025-07 정산은 인하된 15퍼센트가 적용된다`() {
         // 시드에 2025-07 판매가 없으므로 테스트에서 등록
         saleRecordService.register(
             SaleRecordCreateParam(
@@ -489,6 +489,6 @@ class SettlementServiceTest(
         )
 
         assertNotNull(result.feeRate)
-        assertEquals(0, BigDecimal("0.20").compareTo(result.feeRate!!))
+        assertEquals(0, BigDecimal("0.20").compareTo(result.feeRate))
     }
 }

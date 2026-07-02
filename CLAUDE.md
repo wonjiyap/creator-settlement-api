@@ -40,7 +40,7 @@
 - 샘플 데이터는 V2 시드로 매 부팅 재적재(크리에이터 5·강의 10·판매 32·취소 14). 명세 검증 시나리오(creator-1 2025-03, 월 경계, creator-3 빈 월)는 고정이므로 **해당 크리에이터/월 데이터는 건드리지 말 것**.
 - Hibernate 자동 DDL은 끈다: `spring.jpa.hibernate.ddl-auto: validate` → 엔티티 매핑이 Flyway 스키마와 어긋나면 부팅 시 검출된다.
 - ID는 샘플 데이터의 비즈니스 키(`creator-1`, `sale-1` 등)를 그대로 쓰는 **VARCHAR 자연키**. 금액은 원 단위 `BIGINT`.
-- **모든 시각은 KST 기준**: 컬럼은 `TIMESTAMP`(WITHOUT TIME ZONE, MySQL `DATETIME` 급), 엔티티는 `LocalDateTime`으로 매핑. 입력의 `+09:00` 오프셋은 벽시계 값으로 취급.
+- **모든 시각은 KST 기준**: 컬럼은 `TIMESTAMP`(WITHOUT TIME ZONE, MySQL `DATETIME` 급), 엔티티는 `LocalDateTime`으로 매핑. API의 시각 입출력은 **`yyyy-MM-dd HH:mm:ss` 단일 형식**(`@JsonFormat` pattern 고정, KST 벽시계로 해석) — 타임존/오프셋이 붙은 ISO-8601(`2025-03-05T10:00:00+09:00` 등)은 **받지 않는다(400)**.
 - **연관관계(FK 제약)를 두지 않는다.** 테이블 간 참조는 ID 값으로만 느슨하게 연결하며, JPA 엔티티도 `@ManyToOne`/`@OneToMany` 없이 참조 ID를 일반 컬럼(예: `courseId: String`)으로 갖는다. (조인이 필요한 조회는 리포지토리/쿼리에서 명시적으로 처리)
 - Flyway H2 지원은 `flyway-core`에 포함되어 별도 `flyway-database-h2` 모듈 불필요.
 
