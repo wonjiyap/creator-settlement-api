@@ -4,6 +4,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.http.ResponseEntity
 import org.springframework.http.converter.HttpMessageNotReadableException
+import org.springframework.web.HttpRequestMethodNotSupportedException
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.MissingServletRequestParameterException
 import org.springframework.web.bind.annotation.ExceptionHandler
@@ -49,6 +50,13 @@ class GlobalExceptionHandler {
         ResponseEntity
             .status(ErrorCode.CONFLICT.code)
             .body(ErrorResponse(code = ErrorCode.CONFLICT.code, message = ErrorCode.CONFLICT.message))
+
+    /** 경로는 있으나 지원하지 않는 HTTP 메서드(예: POST 전용 다운로드에 GET) → 405. */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException::class)
+    fun handleMethodNotSupported(e: HttpRequestMethodNotSupportedException): ResponseEntity<ErrorResponse> =
+        ResponseEntity
+            .status(ErrorCode.METHOD_NOT_ALLOWED.code)
+            .body(ErrorResponse(code = ErrorCode.METHOD_NOT_ALLOWED.code, message = "${ErrorCode.METHOD_NOT_ALLOWED.message}: ${e.method}"))
 
     /** 매핑되지 않은 경로. */
     @ExceptionHandler(NoResourceFoundException::class)
