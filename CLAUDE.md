@@ -30,7 +30,11 @@
 - JPA 엔티티를 위해 `kotlin("plugin.jpa")` + `allOpen`이 `@Entity`/`@MappedSuperclass`/`@Embeddable`에 적용되어 있다(엔티티 클래스를 `open`으로 선언할 필요 없음).
 
 ### 스키마 / DB
-- **스키마는 Flyway가 소유한다.** 마이그레이션 위치: `src/main/resources/db/migration/`(`V1__init.sql` 스키마, `V2__seed_sample_data.sql` 샘플 데이터). 테이블 변경은 새 `V{n}__*.sql`을 추가하는 방식으로 한다(기존 파일 수정은 지양 — 단, 인메모리라 매 부팅 이력이 초기화되어 개발 중엔 수정해도 무방).
+- **스키마는 Flyway가 소유한다.** 마이그레이션 위치: `src/main/resources/db/migration/`(`V1__init.sql` 스키마, `V2__seed_sample_data.sql` 샘플 데이터, `V3__create_settlement.sql` 정산 스냅샷 테이블, `V4__seed_settlement_data.sql` 정산 시드). 테이블 변경은 새 `V{n}__*.sql`을 추가하는 방식으로 한다(기존 파일 수정은 지양 — 단, 인메모리라 매 부팅 이력이 초기화되어 개발 중엔 수정해도 무방).
+- **정산 시드(V4) 주의**: 동일 크리에이터+월 중복 정산이 409로 막히므로, 테스트가 `create()` 하는 크리에이터/월(creator-1 2025-03, creator-2 2025-01, creator-3 2025-03, creator-4 2025-05·06, creator-5 2025-06)은 **시드에 넣지 말 것**. 시드 금액은 V2 데이터 계산값과 일치해야 한다(`SettlementServiceTest`의 시드 검증 테스트가 감시).
+- **H2에서 `MONTH`는 예약어**라 컬럼명으로 쓰지 않는다 — 정산 대상 연월 컬럼은 `period`(`VARCHAR(7)`, `"YYYY-MM"`), API JSON에서만 `month`로 노출.
+- enum 영속 컬럼은 `@Enumerated(EnumType.STRING)` + `VARCHAR`로 저장한다(예: `settlement.status`).
+- 중복 방지가 필요한 곳은 **서비스 사전 조회 + DB 유니크 제약 이중 방어**(예: `settlement (creator_id, period)` 유니크). 제약 위반(`DataIntegrityViolationException`)은 전역 핸들러가 409로 매핑.
 - 샘플 데이터는 V2 시드로 매 부팅 재적재(크리에이터 5·강의 10·판매 32·취소 14). 명세 검증 시나리오(creator-1 2025-03, 월 경계, creator-3 빈 월)는 고정이므로 **해당 크리에이터/월 데이터는 건드리지 말 것**.
 - Hibernate 자동 DDL은 끈다: `spring.jpa.hibernate.ddl-auto: validate` → 엔티티 매핑이 Flyway 스키마와 어긋나면 부팅 시 검출된다.
 - ID는 샘플 데이터의 비즈니스 키(`creator-1`, `sale-1` 등)를 그대로 쓰는 **VARCHAR 자연키**. 금액은 원 단위 `BIGINT`.
@@ -46,10 +50,11 @@
 - **순 판매 = 총 판매 − 환불.** 부분 환불(환불액 < 원결제액)을 반드시 지원.
 - **정산 기간 기준**: 판매는 결제 완료 일시(`paidAt`), 취소는 취소 일시 기준. **KST**. 월 경계는 해당 월 1일 `00:00:00` ~ 말일 `23:59:59`. → 1월 말 결제 / 2월 초 취소는 각각 다른 월 정산에 반영된다(월 경계 케이스).
 - 빈 월 조회(판매 없음)는 0원으로 일관되게 응답.
+- **정산 상태 관리(구현됨)**: 정산 확정은 크리에이터+월 단위 스냅샷(`Settlement` 엔티티)으로 영속화. 상태는 PENDING → CONFIRMED → PAID **단방향 전이만** 허용(역행·건너뛰기·재호출은 409, 전이 검증은 엔티티 메서드 `confirm`/`pay`에 위치). 동일 크리에이터+월 중복 정산은 상태 무관 409. 스냅샷은 생성 시점 계산으로 고정(이후 판매/취소 미반영)이며 생성 당시 `feeRate`를 함께 저장.
 
 ### API 범위
 - 필수: ① 판매/취소 내역 등록 및 크리에이터별·기간 필터 조회, ② 크리에이터별 월별 정산 계산(요청: 크리에이터 ID + 연월 `YYYY-MM`; 응답: 총 판매/환불/순 판매/수수료/정산 예정 금액 + 판매·취소 건수), ③ 운영자용 기간 집계(시작일~종료일 → 크리에이터별 정산 예정 금액 목록 + 전체 합계).
-- 선택(가산점): 정산 상태 관리(PENDING→CONFIRMED→PAID), 동일 기간 중복 정산 방지, CSV/엑셀 다운로드, 수수료율 변경 이력(과거 정산은 당시 수수료율 적용).
+- 선택(가산점): 정산 상태 관리(PENDING→CONFIRMED→PAID) ✅ 구현, 동일 기간 중복 정산 방지 ✅ 구현, CSV/엑셀 다운로드, 수수료율 변경 이력(과거 정산은 당시 수수료율 적용).
 
 실제 결제 시스템 연동은 불필요 — 데이터는 API 또는 직접 삽입으로 등록한다.
 
@@ -58,7 +63,7 @@
 루트 패키지는 `com.wonjiyap.creatorsettlementapi`. **계층별 패키지 + DTO는 계층 하위에 중첩**한다:
 
 ```
-domain/            # 엔티티 (Creator, Course, SaleRecord, CancelRecord)
+domain/            # 엔티티 (Creator, Course, SaleRecord, CancelRecord, Settlement)
 repository/        # Spring Data JPA 리포지토리
   dto/             # 조회 프로젝션 DTO (집계/조인 결과)
 service/           # 비즈니스 로직 (필요 시 service 계산 결과 모델)

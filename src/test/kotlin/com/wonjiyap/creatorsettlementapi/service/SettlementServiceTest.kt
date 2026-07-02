@@ -1,20 +1,31 @@
 package com.wonjiyap.creatorsettlementapi.service
 
+import com.wonjiyap.creatorsettlementapi.domain.SettlementStatus
 import com.wonjiyap.creatorsettlementapi.exception.CreatorException
+import com.wonjiyap.creatorsettlementapi.exception.ErrorCode
 import com.wonjiyap.creatorsettlementapi.service.dto.MonthlySettlementParam
 import com.wonjiyap.creatorsettlementapi.service.dto.PeriodSettlementParam
+import com.wonjiyap.creatorsettlementapi.service.dto.SaleRecordCreateParam
+import com.wonjiyap.creatorsettlementapi.service.dto.SettlementCreateParam
+import com.wonjiyap.creatorsettlementapi.service.dto.SettlementListParam
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.transaction.annotation.Transactional
+import java.math.BigDecimal
 import java.time.LocalDate
+import java.time.LocalDateTime
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @SpringBootTest
 @Transactional
 class SettlementServiceTest(
     @Autowired val settlementService: SettlementService,
+    @Autowired val saleRecordService: SaleRecordService,
 ) {
 
     @Test
@@ -191,5 +202,227 @@ class SettlementServiceTest(
         assertEquals(150000, result.totalSales)
         assertEquals(1, result.saleCount)
         assertEquals(120000, result.settlementAmount)
+    }
+
+    // ---- 정산 상태 관리 & 중복 정산 방지 ----
+
+    @Test
+    fun `정산 생성 - creator-1 2025-03 스냅샷이 PENDING으로 저장된다`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+
+        assertTrue(settlement.id.startsWith("settlement-"))
+        assertEquals("creator-1", settlement.creatorId)
+        assertEquals("2025-03", settlement.period)
+        assertEquals(SettlementStatus.PENDING, settlement.status)
+        assertEquals(260000, settlement.totalSales)
+        assertEquals(110000, settlement.totalRefund)
+        assertEquals(150000, settlement.netSales)
+        assertEquals(30000, settlement.fee)
+        assertEquals(120000, settlement.settlementAmount)
+        assertEquals(4, settlement.saleCount)
+        assertEquals(2, settlement.cancelCount)
+        // DECIMAL(5,4) 재조회 시 scale이 달라질 수 있으므로 compareTo로 비교
+        assertEquals(0, BigDecimal("0.20").compareTo(settlement.feeRate))
+        assertNull(settlement.confirmedAt)
+        assertNull(settlement.paidAt)
+    }
+
+    @Test
+    fun `정산 생성 - 빈 월(creator-3)도 0원으로 생성된다`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-3", "2025-03"))
+
+        assertEquals(SettlementStatus.PENDING, settlement.status)
+        assertEquals(0, settlement.totalSales)
+        assertEquals(0, settlement.totalRefund)
+        assertEquals(0, settlement.netSales)
+        assertEquals(0, settlement.fee)
+        assertEquals(0, settlement.settlementAmount)
+    }
+
+    @Test
+    fun `정산 생성 - 순매출 음수 월(creator-4 2025-05)도 그대로 저장된다`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-4", "2025-05"))
+
+        assertEquals(-70000, settlement.netSales)
+        assertEquals(-56000, settlement.settlementAmount)
+    }
+
+    @Test
+    fun `중복 정산 방지 - 동일 크리에이터+월 재생성은 409`() {
+        settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+
+        val e = assertThrows(CreatorException::class.java) {
+            settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+        }
+        assertEquals(ErrorCode.CONFLICT, e.errorCode)
+    }
+
+    @Test
+    fun `중복 정산 방지 - 확정된 정산이 있어도 상태와 무관하게 409`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+        settlementService.confirm(settlement.id)
+
+        val e = assertThrows(CreatorException::class.java) {
+            settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+        }
+        assertEquals(ErrorCode.CONFLICT, e.errorCode)
+    }
+
+    @Test
+    fun `정산 생성 - 존재하지 않는 크리에이터면 404`() {
+        val e = assertThrows(CreatorException::class.java) {
+            settlementService.create(SettlementCreateParam("creator-없음", "2025-03"))
+        }
+        assertEquals(ErrorCode.NOT_FOUND, e.errorCode)
+    }
+
+    @Test
+    fun `정산 생성 - 잘못된 연월 형식이면 400`() {
+        val e = assertThrows(CreatorException::class.java) {
+            settlementService.create(SettlementCreateParam("creator-1", "2025-13"))
+        }
+        assertEquals(ErrorCode.BAD_REQUEST, e.errorCode)
+    }
+
+    @Test
+    fun `상태 전이 - confirm 시 CONFIRMED로 전이되고 시각이 기록된다`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+
+        val confirmed = settlementService.confirm(settlement.id)
+
+        assertEquals(SettlementStatus.CONFIRMED, confirmed.status)
+        assertNotNull(confirmed.confirmedAt)
+        assertNull(confirmed.paidAt)
+    }
+
+    @Test
+    fun `상태 전이 - confirm 후 pay 시 PAID로 전이되고 시각이 기록된다`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+        settlementService.confirm(settlement.id)
+
+        val paid = settlementService.pay(settlement.id)
+
+        assertEquals(SettlementStatus.PAID, paid.status)
+        assertNotNull(paid.confirmedAt)
+        assertNotNull(paid.paidAt)
+    }
+
+    @Test
+    fun `상태 전이 - PENDING에서 바로 pay는 409 (건너뛰기 금지)`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+
+        val e = assertThrows(CreatorException::class.java) {
+            settlementService.pay(settlement.id)
+        }
+        assertEquals(ErrorCode.CONFLICT, e.errorCode)
+    }
+
+    @Test
+    fun `상태 전이 - PAID에서 confirm은 409 (역행 금지)`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+        settlementService.confirm(settlement.id)
+        settlementService.pay(settlement.id)
+
+        val e = assertThrows(CreatorException::class.java) {
+            settlementService.confirm(settlement.id)
+        }
+        assertEquals(ErrorCode.CONFLICT, e.errorCode)
+    }
+
+    @Test
+    fun `상태 전이 - CONFIRMED에서 confirm 재호출은 409`() {
+        val settlement = settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+        settlementService.confirm(settlement.id)
+
+        val e = assertThrows(CreatorException::class.java) {
+            settlementService.confirm(settlement.id)
+        }
+        assertEquals(ErrorCode.CONFLICT, e.errorCode)
+    }
+
+    @Test
+    fun `존재하지 않는 정산 id로 confirm-pay-get 하면 404`() {
+        listOf<(String) -> Any>(
+            { settlementService.confirm(it) },
+            { settlementService.pay(it) },
+            { settlementService.get(it) },
+        ).forEach { action ->
+            val e = assertThrows(CreatorException::class.java) { action("settlement-없음") }
+            assertEquals(ErrorCode.NOT_FOUND, e.errorCode)
+        }
+    }
+
+    @Test
+    fun `스냅샷 불변성 - 정산 생성 후 판매가 추가되어도 스냅샷은 바뀌지 않는다`() {
+        // creator-5 2025-06: 판매 150,000 → 정산 120,000 스냅샷 생성
+        val settlement = settlementService.create(SettlementCreateParam("creator-5", "2025-06"))
+        assertEquals(120000, settlement.settlementAmount)
+
+        // 같은 달(course-9는 creator-5의 강의)에 판매 추가
+        saleRecordService.register(
+            SaleRecordCreateParam(
+                courseId = "course-9",
+                studentId = "student-99",
+                amount = 100000,
+                paidAt = LocalDateTime.of(2025, 6, 20, 12, 0, 0),
+            ),
+        )
+
+        // 즉석 계산은 증가하지만 스냅샷은 그대로
+        val recalculated = settlementService.getMonthly(MonthlySettlementParam("creator-5", "2025-06"))
+        assertEquals(250000, recalculated.totalSales)
+
+        val stored = settlementService.get(settlement.id)
+        assertEquals(150000, stored.totalSales)
+        assertEquals(120000, stored.settlementAmount)
+    }
+
+    @Test
+    fun `목록 조회 - 크리에이터·월·상태 필터가 각각 적용된다`() {
+        // V4 시드(settlement-1~5)가 이미 존재하므로 개수 비교 대신 포함·조건 만족으로 검증
+        val s1 = settlementService.create(SettlementCreateParam("creator-1", "2025-03"))
+        val s2 = settlementService.create(SettlementCreateParam("creator-2", "2025-01"))
+        val s3 = settlementService.create(SettlementCreateParam("creator-4", "2025-06"))
+        settlementService.confirm(s2.id)
+
+        val byCreator = settlementService.list(SettlementListParam(creatorId = "creator-1"))
+        assertTrue(byCreator.any { it.id == s1.id })
+        assertTrue(byCreator.all { it.creatorId == "creator-1" })
+
+        val byMonth = settlementService.list(SettlementListParam(month = "2025-01"))
+        assertEquals(listOf(s2.id), byMonth.map { it.id })
+
+        val byStatus = settlementService.list(SettlementListParam(status = SettlementStatus.CONFIRMED))
+        assertTrue(byStatus.any { it.id == s2.id })
+        assertTrue(byStatus.all { it.status == SettlementStatus.CONFIRMED })
+
+        val all = settlementService.list(SettlementListParam())
+        assertTrue(all.map { it.id }.containsAll(listOf(s1.id, s2.id, s3.id)))
+    }
+
+    @Test
+    fun `시드 정산 - 스냅샷 금액이 판매·취소 데이터 계산과 일치한다`() {
+        // settlement-2: creator-4 2025-03 PAID 시드 — V2 판매/취소로 계산한 값과 같아야 한다
+        val seeded = settlementService.get("settlement-2")
+        val calculated = settlementService.getMonthly(MonthlySettlementParam("creator-4", "2025-03"))
+
+        assertEquals(SettlementStatus.PAID, seeded.status)
+        assertEquals(calculated.totalSales, seeded.totalSales)
+        assertEquals(calculated.totalRefund, seeded.totalRefund)
+        assertEquals(calculated.netSales, seeded.netSales)
+        assertEquals(calculated.fee, seeded.fee)
+        assertEquals(calculated.settlementAmount, seeded.settlementAmount)
+        assertEquals(calculated.saleCount, seeded.saleCount)
+        assertEquals(calculated.cancelCount, seeded.cancelCount)
+        assertNotNull(seeded.confirmedAt)
+        assertNotNull(seeded.paidAt)
+    }
+
+    @Test
+    fun `시드 정산 - 시드가 있는 크리에이터+월 재생성도 409`() {
+        val e = assertThrows(CreatorException::class.java) {
+            settlementService.create(SettlementCreateParam("creator-4", "2025-03"))
+        }
+        assertEquals(ErrorCode.CONFLICT, e.errorCode)
     }
 }
